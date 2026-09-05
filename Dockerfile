@@ -14,6 +14,7 @@ COPY config/ ./config/
 COPY scripts/ ./scripts/
 
 RUN pip install --no-cache-dir -e . \
+    && chmod +x scripts/entrypoint.sh \
     && useradd --create-home --uid 1000 app \
     && mkdir -p /data/db /data/working /data/rendered /data/daily \
     && chown -R app:app /app /data

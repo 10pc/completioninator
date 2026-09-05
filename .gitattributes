@@ -1,0 +1,4 @@
+# Force LF line endings where the container runtime cares.
+*.sh text eol=lf
+Dockerfile text eol=lf
+compose.yml text eol=lf
