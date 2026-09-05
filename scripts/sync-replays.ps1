@@ -28,16 +28,40 @@ if (-not (Test-Path -LiteralPath $Source)) { throw "Source not found: $Source" }
 if (-not (Test-Path -LiteralPath $Destination)) { throw "Destination unreachable: $Destination. Check the NAS/SMB connection first." }
 
 $staging = Join-Path $Destination $StagingDirName
-if ($PSCmdlet.ShouldProcess($staging, "create staging dir")) {
-  New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+# 0. Plan: which *.osr files are actually missing at the destination?
+$planned = @(Get-ChildItem -LiteralPath $Source -Recurse -File -Filter "*.osr" -ErrorAction SilentlyContinue |
+  Where-Object {
+    $rel = [System.IO.Path]::GetRelativePath($Source, $_.FullName)
+    -not (Test-Path -LiteralPath (Join-Path $Destination $rel))
+  })
+Write-Output "new replays to publish: $($planned.Count)"
+$planned | Select-Object -First 10 -ExpandProperty FullName | ForEach-Object { Write-Output "  + $_" }
+if ($planned.Count -gt 10) { Write-Output "  ... and $($planned.Count - 10) more" }
+
+if (-not $PSCmdlet.ShouldProcess("$($planned.Count) new replay(s)", "sync to $Destination")) { return }
+
+New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+# Pre-flight: prove the destination is writable before robocopy runs.
+$probe = Join-Path $staging ".write-test"
+try {
+  [System.IO.File]::WriteAllText($probe, "ok")
+  Remove-Item -LiteralPath $probe -Force
+} catch {
+  throw "Destination not writable ($staging): $($_.Exception.Message). Check SMB permissions."
 }
 
 # 1. Bulk copy *.osr (only) into staging. /XC /XN /XO = skip anything already
 #    staged (mirror of rsync --ignore-existing); no /MIR so nothing is deleted.
-$rcArgs = @($Source, $staging, "*.osr", "/E", "/XC", "/XN", "/XO", "/R:2", "/W:3", "/NJH", "/NJS")
+$rcLog = Join-Path ([System.IO.Path]::GetTempPath()) "osu-sync-robocopy.log"
+$rcArgs = @($Source, $staging, "*.osr", "/E", "/XC", "/XN", "/XO", "/R:2", "/W:3", "/NJH", "/NJS", "/LOG:$rcLog")
 & robocopy @rcArgs | Out-Null
 $rc = $LASTEXITCODE
-if ($rc -ge 8) { throw "robocopy failed with exit code $rc" }
+if ($rc -ge 8) {
+  $tail = if (Test-Path -LiteralPath $rcLog) { (Get-Content -LiteralPath $rcLog -Tail 15) -join "`n" } else { "(no log)" }
+  throw "robocopy failed with exit code $rc. Log tail:`n$tail"
+}
 
 # 2. Move staged files into place (same-share move = atomic rename).
 $copied = 0; $skipped = 0
