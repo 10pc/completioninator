@@ -1,20 +1,24 @@
-"""CLI: osu-pipeline discover / status (Milestone 1)."""
+"""CLI: osu-pipeline discover / render / status."""
 
 from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import database
+from . import beatmaps, database
 from .config import load_config
-from .discovery import scan_replays
+from .discovery import read_beatmap_hash, scan_replays
+from .renderer import DanserRenderer
+
+log = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="osu-pipeline", description="osu! completionist pipeline (M1: discovery)")
+    p = argparse.ArgumentParser(prog="osu-pipeline", description="osu! completionist pipeline")
     p.add_argument("--config", default=None, help="Path to config.toml")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)
@@ -25,6 +29,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("status", help="Show discovery state")
     s.add_argument("--db", default=None, help="Override database path")
+
+    r = sub.add_parser("render", help="Render pending replays with danser")
+    r.add_argument("--limit", type=int, default=None, help="Max jobs this run (default: config)")
+    r.add_argument("--db", default=None, help="Override database path")
+    r.add_argument("--beatmapset-id", type=int, default=None,
+                   help="Skip mirror lookup; use this beatmapset for every job (acceptance testing)")
     return p
 
 
@@ -68,6 +78,103 @@ def _cmd_status(args, cfg) -> int:
     return 0
 
 
+def _cmd_render(args, cfg) -> int:
+    db_path = Path(args.db) if args.db else cfg.database_path
+    limit = args.limit if args.limit is not None else cfg.render_limit_default
+    renderer = DanserRenderer(
+        danser_home=cfg.danser_home,
+        settings=cfg.danser_settings,
+        timeout_seconds=cfg.render_timeout_seconds,
+    )
+    if not Path(renderer.cmd_prefix[0]).exists():
+        print(f"danser not found: {renderer.cmd_prefix[0]} (PIPELINE_DANSER_HOME={cfg.danser_home})",
+              file=sys.stderr)
+        return 2
+    cfg.working_dir.mkdir(parents=True, exist_ok=True)
+
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    stats = {"rendered": 0, "failed": 0}
+    try:
+        stale = database.reset_stale_rendering(conn)
+        if stale:
+            print(f"requeued {stale} stale rendering job(s)")
+        for _ in range(limit):
+            job = database.claim_pending(conn)
+            if job is None:
+                break
+            _render_one(conn, cfg, renderer, job, override_set_id=args.beatmapset_id, stats=stats)
+    finally:
+        conn.close()
+    print(f"rendered={stats['rendered']} failed={stats['failed']}")
+    return 0
+
+
+def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id, stats: dict) -> None:
+    jid = job["id"]
+    tag = f"job-{jid}"
+    if job["attempts"] > cfg.render_max_attempts:
+        database.mark_failed(conn, jid, f"gave up after {job['attempts']} attempts: {job.get('error')}")
+        stats["failed"] += 1
+        print(f"[{tag}] gave up (attempts exceeded)")
+        return
+
+    src = cfg.replays_dir / job["path"]
+    if not src.exists():
+        database.mark_failed(conn, jid, f"source missing: {src}")
+        stats["failed"] += 1
+        print(f"[{tag}] source missing: {job['path']}")
+        return
+
+    scratch = cfg.working_dir / f"{tag}.osr"
+    try:
+        shutil.copyfile(src, scratch)
+    except OSError as exc:
+        database.mark_failed(conn, jid, f"scratch copy failed: {exc}")
+        stats["failed"] += 1
+        print(f"[{tag}] scratch copy failed: {exc}")
+        return
+
+    bhash = job.get("beatmap_hash") or read_beatmap_hash(scratch)
+    if bhash and not job.get("beatmap_hash"):
+        database.set_beatmap(conn, jid, bhash, job.get("beatmapset_id"))
+
+    try:
+        set_id, _osz = beatmaps.ensure_beatmap(
+            cfg.beatmap_mirror, bhash, cfg.songs_dir, override_set_id=override_set_id
+        )
+        database.set_beatmap(conn, jid, bhash, set_id)
+    except beatmaps.BeatmapError as exc:
+        database.mark_failed(conn, jid, str(exc))
+        stats["failed"] += 1
+        print(f"[{tag}] beatmap unavailable: {exc}")
+        return
+
+    result = renderer.render(scratch, tag)
+    print(result.log_text)
+    scratch.unlink(missing_ok=True)
+    if not result.ok:
+        database.mark_failed(conn, jid, (result.error or "render failed")[-500:])
+        stats["failed"] += 1
+        print(f"[{tag}] FAILED: {result.error}")
+        return
+
+    day = job.get("day") or "unknown-day"
+    dest_dir = cfg.rendered_dir / day
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{jid}.mp4"
+    try:
+        shutil.move(str(result.output), dest)
+    except OSError as exc:
+        database.mark_failed(conn, jid, f"collect output failed: {exc}")
+        stats["failed"] += 1
+        print(f"[{tag}] collect failed: {exc}")
+        return
+    database.mark_rendered(conn, jid, dest.as_posix())
+    stats["rendered"] += 1
+    print(f"[{tag}] rendered -> {dest} ({result.duration_s}s)" if result.duration_s else f"[{tag}] rendered -> {dest}")
+
+
 def main(argv: list | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -84,6 +191,8 @@ def main(argv: list | None = None) -> int:
         return _cmd_discover(args, cfg)
     if args.command == "status":
         return _cmd_status(args, cfg)
+    if args.command == "render":
+        return _cmd_render(args, cfg)
     parser.print_help()
     return 2
 

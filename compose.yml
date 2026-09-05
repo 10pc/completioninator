@@ -1,6 +1,9 @@
 services:
   pipeline:
-    build: .
+    build:
+      context: .
+      # args:
+      #   DANSER_VERSION: 0.11.0
     volumes:
       # Ubuntu host mounts the NAS first; container only bind-mounts it read-only.
       - /mnt/nas/osu-replays:/replays:ro

@@ -1,4 +1,4 @@
-# osu-completionist pipeline — Milestone 1: Replay Discovery
+# osu-completionist pipeline — Milestone 2: Rendering
 
 > apologies for the vibecoded slop. i swear i know how to code, i'm just very lazy
 
@@ -19,13 +19,34 @@ Ubuntu render server (run by operator):
 ls /mnt/nas/osu-replays
 docker compose build
 docker compose run --rm pipeline discover
+docker compose run --rm pipeline render --limit 1
 docker compose run --rm pipeline status
+ls data/rendered/*/
 ```
+
+Beatmaps come from the catboy.best mirror automatically (no key needed);
+downloaded `.osz` files are cached in `/data/beatmaps/songs` for danser.
 
 Rules: never write to `/replays`, only `.osr` is processed (never `.part`),
 day boundary is UTC midnight, identity is `(path, sha256)`.
 
-Gaming PC rsync convention (operator runs on gaming PC):
+Gaming PC sync — Windows/SMB (operator runs on gaming PC):
+
+```powershell
+# one-off flags, or set $env:OSU_REPLAYS_SOURCE / $env:NAS_REPLAYS_DEST
+.\scripts\sync-replays.ps1 -WhatIf
+.\scripts\sync-replays.ps1 -Source 'C:\Users\user\osu!\Replays' -Destination '\\nas\osu\replays'
+```
+
+Only new `.osr` files are copied (never overwritten/deleted); they stage in
+`.staging/` then move into place so the scanner never sees a partial file.
+
+```powershell
+# later: hourly background sync (scheduling deferred for now)
+# schtasks /create /tn OsuReplaySync /tr "powershell -File C:\path\to\sync-replays.ps1" /sc HOURLY
+```
+
+Gaming PC sync — Linux/rsync alternative:
 
 ```bash
 rsync -a --ignore-existing ~/osu/replays/ nas:/srv/osu/replays/

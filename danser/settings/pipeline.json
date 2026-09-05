@@ -1,0 +1,23 @@
+{
+  "General": {
+    "OsuSongsDir": "/data/beatmaps/songs",
+    "OsuSkinsDir": "/opt/danser/skins",
+    "UnpackOszFiles": true
+  },
+  "Recording": {
+    "FrameWidth": 1280,
+    "FrameHeight": 720,
+    "FPS": 30,
+    "Encoder": "libx264",
+    "libx264": {
+      "RateControl": "crf",
+      "CRF": 23,
+      "Profile": "high",
+      "Preset": "veryfast"
+    },
+    "PixelFormat": "yuv420p",
+    "AudioCodec": "aac",
+    "OutputDir": "videos",
+    "Container": "mp4"
+  }
+}

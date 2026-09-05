@@ -9,6 +9,7 @@ data/db/*
 data/working/
 data/rendered/
 data/daily/
+data/beatmaps/
 fixtures/
 .env
 # keep directory placeholders

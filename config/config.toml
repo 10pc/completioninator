@@ -1,7 +1,20 @@
 [paths]
 replays = "/replays"
 database = "/data/db/pipeline.sqlite"
+working = "/data/working"
+rendered = "/data/rendered"
 
 [pipeline]
 timezone = "UTC"
 min_age_seconds = 5
+
+[render]
+danser_home = "/opt/danser"
+settings = "pipeline"
+timeout_seconds = 600
+max_attempts = 3
+limit_default = 10
+
+[beatmaps]
+mirror = "https://catboy.best"
+songs_dir = "/data/beatmaps/songs"

@@ -1,4 +1,4 @@
-"""Periodic replay scanner: NAS replay dir -> SQLite. Milestone 1 only.
+"""Periodic replay scanner: NAS replay dir -> SQLite.
 
 Rules:
 - Recursive scan for files whose suffix is exactly `.osr` (case-insensitive).
@@ -36,12 +36,15 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
-def _extract_played_at(osr_path: Path, fallback_mtime_ns: int) -> tuple[str | None, str | None, str | None]:
-    """Return (played_at_iso, day, error). Falls back to file mtime (UTC) on parse failure."""
+def _extract_osr_meta(
+    osr_path: Path, fallback_mtime_ns: int
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Return (played_at_iso, day, beatmap_hash, error). Falls back to mtime on parse failure."""
     try:
         from osrparse import Replay  # local import so tests can run without it until installed
 
         replay = Replay.from_path(osr_path)
+        beatmap_hash = getattr(replay, "beatmap_hash", None)
         ts = replay.timestamp
         if isinstance(ts, datetime):
             dt = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
@@ -55,11 +58,21 @@ def _extract_played_at(osr_path: Path, fallback_mtime_ns: int) -> tuple[str | No
         else:
             raise TypeError(f"unexpected osrparse timestamp type: {type(ts)}")
         played_at = dt_utc.isoformat()
-        return played_at, dt_utc.date().isoformat(), None
+        return played_at, dt_utc.date().isoformat(), beatmap_hash, None
     except Exception as exc:  # noqa: BLE001 - record-and-continue by design
         mtime = datetime.fromtimestamp(fallback_mtime_ns / 1e9, tz=timezone.utc)
         log.warning("osrparse failed for %s (%s); falling back to mtime", osr_path, exc)
-        return mtime.isoformat(), mtime.date().isoformat(), f"timestamp_fallback: {exc}"
+        return mtime.isoformat(), mtime.date().isoformat(), None, f"timestamp_fallback: {exc}"
+
+
+def read_beatmap_hash(osr_path: Path) -> str | None:
+    """Best-effort beatmap MD5 for a replay (used to backfill M1 rows at render time)."""
+    try:
+        from osrparse import Replay
+
+        return getattr(Replay.from_path(osr_path), "beatmap_hash", None)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def is_stable_candidate(path: Path, stat_result, min_age_seconds: int, now_ns: int) -> bool:
@@ -111,7 +124,7 @@ def scan_replays(
                 stats["duplicates"] += 1
                 continue
 
-            played_at, day, error = _extract_played_at(candidate, st.st_mtime_ns)
+            played_at, day, beatmap_hash, error = _extract_osr_meta(candidate, st.st_mtime_ns)
             if error:
                 stats["parse_fallbacks"] += 1
 
@@ -125,6 +138,7 @@ def scan_replays(
                 day=day,
                 status=STATUS_PENDING,
                 error=error,
+                beatmap_hash=beatmap_hash,
             )
             if inserted:
                 stats["new"] += 1
