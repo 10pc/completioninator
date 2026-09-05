@@ -2,6 +2,8 @@
 # danser binary is baked in from a pinned upstream release.
 ARG DANSER_VERSION=0.11.0
 FROM python:3.12-slim
+# Re-declare: pre-FROM ARGs are not visible in build steps without this.
+ARG DANSER_VERSION=0.11.0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
