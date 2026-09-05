@@ -1,5 +1,7 @@
 # osu-completionist pipeline — Milestone 1: Replay Discovery
 
+> apologies for the vibecoded slop. i swear i know how to code, i'm just very lazy
+
 Windows dev (this machine):
 
 ```powershell
