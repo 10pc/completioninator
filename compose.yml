@@ -1,0 +1,11 @@
+services:
+  pipeline:
+    build: .
+    volumes:
+      # Ubuntu host mounts the NAS first; container only bind-mounts it read-only.
+      - /mnt/nas/osu-replays:/replays:ro
+      - ./data:/data
+      - ./config:/config:ro
+    environment:
+      PIPELINE_CONFIG: /config/config.toml
+    restart: unless-stopped

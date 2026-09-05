@@ -1,0 +1,7 @@
+[paths]
+replays = "/replays"
+database = "/data/db/pipeline.sqlite"
+
+[pipeline]
+timezone = "UTC"
+min_age_seconds = 5

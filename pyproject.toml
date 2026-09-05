@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osu-pipeline"
+version = "0.1.0"
+description = "osu! completionist automated content pipeline (Milestone 1: discovery)"
+requires-python = ">=3.11"
+dependencies = ["osrparse>=6.0.0"]
+
+[project.scripts]
+osu-pipeline = "osu_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

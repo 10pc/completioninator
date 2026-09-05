@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+data/db/*
+data/working/
+data/rendered/
+data/daily/
+fixtures/
+.env
+# keep directory placeholders
+!data/.gitkeep
+!data/db/.gitkeep
