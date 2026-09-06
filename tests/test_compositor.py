@@ -73,3 +73,12 @@ def test_segment_graph_references_longest_audio():
     assert "[0:a]aresample=48000" in graph  # longest clip's audio
     assert audio == "[aout]"
     assert "drawtext=" in graph and "HDR" in graph
+
+
+def test_single_clip_skips_xstack():
+    seg = compositor.Segment(start=0.0, end=60.0, active=[_clip(1, 60.0)])
+    graph, audio = compositor.build_segment_graph(
+        seg, 0, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
+    assert "xstack" not in graph
+    assert "[0:v]scale=1920:1000" in graph
+    assert audio == "[aout]"

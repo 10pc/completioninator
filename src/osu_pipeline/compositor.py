@@ -144,13 +144,17 @@ def build_segment_graph(seg: Segment, longest_idx: int, width: int, grid_h: int,
     cols, rows = grid_dims(k)
     tw, th = tile_size(cols, rows, width, grid_h)
     chains = []
-    for i in range(k):
+    if k == 1:
+        # xstack needs >= 2 inputs; a lone survivor just fills the grid area.
+        chains.append(f"[0:v]scale={width}:{grid_h},setsar=1,fps={fps},setpts=PTS-STARTPTS[vgrid]")
+    else:
+        for i in range(k):
+            chains.append(
+                f"[{i}:v]scale={tw}:{th},setsar=1,fps={fps},setpts=PTS-STARTPTS[v{i}]")
+        labels = "".join(f"[v{i}]" for i in range(k))
+        layout = layout_string(cols, rows, k, tw, th, header_h)
         chains.append(
-            f"[{i}:v]scale={tw}:{th},setsar=1,fps={fps},setpts=PTS-STARTPTS[v{i}]")
-    labels = "".join(f"[v{i}]" for i in range(k))
-    layout = layout_string(cols, rows, k, tw, th, header_h)
-    chains.append(
-        f"{labels}xstack=inputs={k}:layout={layout}:fill=black[vgrid]")
+            f"{labels}xstack=inputs={k}:layout={layout}:fill=black[vgrid]")
     chains.append(f"[vgrid]{drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)}[vout]")
     audio = ""
     order = [longest_idx] + [i for i in range(k) if i != longest_idx]
