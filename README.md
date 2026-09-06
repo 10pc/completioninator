@@ -50,11 +50,10 @@ ls data/daily/
 ```
 
 Fixed 1080p canvas; the grid starts full and shrinks as clips finish until
-the longest plays alone. Audio throughout is the longest clip's track.
-Header shows date + map count (`header_extra` in config appends future
-API-sourced data). Full danser-style per-job thinking doesn't apply here —
-`compose` prints per-segment progress; segments live under
-`data/working/compose-<date>/` until a successful join cleans them.
+the longest plays alone. Tiles keep source aspect (letterboxed); each resize
+is softened with a short fade. Audio is one continuous mix of all playing
+clips (built separately, so segment joins never glitch it). Header reads
+`dd-mm-yyyy | X maps` (`header_extra` appends future API-sourced data).
 
 `stop` drops a sentinel next to the database, so it reaches a running loop
 from any other container invocation; Ctrl+C works too (exit 130). The
