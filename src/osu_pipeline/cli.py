@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import beatmaps, compositor, database
+from . import beatmaps, completion, compositor, database
 from .config import load_config
 from .discovery import read_beatmap_hash, scan_replays
 from .renderer import DanserRenderer
@@ -418,19 +418,35 @@ def _cmd_compose(args, cfg) -> int:
     timeline = compositor.plan_timeline(kept, morph_s=cfg.morph_seconds,
                                         width=cfg.video_width, grid_h=grid_h,
                                         header_h=cfg.header_height)
+    comp_stats = None
+    try:
+        comp_stats = completion.fetch_completion(cfg.completion_profile_url)
+    except completion.CompletionError as exc:
+        log.warning("completion stats fetch failed: %s", exc)
+        comp_stats = completion.from_manual(
+            cfg.completion_passed, cfg.completion_left, cfg.completion_pct)
+    outro_dur = cfg.outro_seconds if comp_stats else 0.0
+    if comp_stats:
+        print(f"completion: {comp_stats.line1} ({comp_stats.line2})")
+    else:
+        print("completion stats unavailable; skipping outro")
     n_seg = sum(isinstance(s, compositor.Segment) for s in timeline)
     n_morph = len(timeline) - n_seg
-    print(f"encoding {n_seg} static + {n_morph} morph spans -> {out_path}")
+    print(f"encoding {n_seg} static + {n_morph} morph spans"
+          f"{' + outro' if outro_dur else ''} -> {out_path}")
     seg_paths = []
     video_tmp = workdir / "video.mp4"
     audio_tmp = workdir / "audio.m4a"
     clips_by_id = {c.id: c for c in kept}
+    content_len = max(c.duration for c in kept)
+    total_len = content_len + outro_dur
     try:
         for i, span_item in enumerate(timeline):
             seg_path = workdir / f"seg-{i:03d}.mp4"
             graph = workdir / f"seg-{i:03d}.txt"
             seg_timeout = max(600, int(span_item.length * 10) + 120)
             seg_timeout = min(seg_timeout, cfg.compose_timeout)
+            last = i == len(timeline) - 1
             if isinstance(span_item, compositor.MorphSpan):
                 script, ordered = compositor.build_morph_graph(
                     span_item, clips_by_id, cfg.video_width, grid_h,
@@ -442,16 +458,26 @@ def _cmd_compose(args, cfg) -> int:
             else:
                 graph.write_text(compositor.build_segment_graph(
                     span_item, cfg.video_width, grid_h,
-                    cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36))
+                    cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36,
+                    fade_out=1.0 if last and outro_dur else 0.0))
                 compositor.encode_segment(ffmpeg, span_item, graph, seg_path,
                                           cfg.video_fps, cfg.video_preset, cfg.video_crf,
                                           seg_timeout)
             seg_paths.append(seg_path)
+        if outro_dur:
+            outro_path = workdir / "seg-outro.mp4"
+            outro_graph = workdir / "seg-outro.txt"
+            outro_graph.write_text(compositor.build_outro_graph(
+                cfg.video_width, cfg.video_height, outro_dur,
+                comp_stats.line1, comp_stats.line2,
+                cfg.fontfile, cfg.outro_fontsize, cfg.outro_fontsize_sub))
+            compositor.encode_outro(ffmpeg, outro_graph, outro_path,
+                                    cfg.video_preset, cfg.video_crf, 600)
+            seg_paths.append(outro_path)
         compositor.concat_segments(ffmpeg, seg_paths, video_tmp, workdir)
-        audio_script, has_audio = compositor.build_audio_graph(kept)
+        audio_script, has_audio = compositor.build_audio_graph(kept, content_len, total_len)
         if has_audio:
             (workdir / "audio.txt").write_text(audio_script)
-            total_len = sum(c.duration for c in kept)
             compositor.encode_audio_mix(ffmpeg, kept, workdir / "audio.txt", audio_tmp,
                                         min(max(300, int(total_len)), cfg.compose_timeout))
             compositor.mux_audio_video(ffmpeg, video_tmp, audio_tmp, out_path)
@@ -473,6 +499,7 @@ def _cmd_compose(args, cfg) -> int:
         p.unlink(missing_ok=True)
     (workdir / "concat.txt").unlink(missing_ok=True)
     (workdir / "audio.txt").unlink(missing_ok=True)
+    (workdir / "seg-outro.txt").unlink(missing_ok=True)
     video_tmp.unlink(missing_ok=True)
     audio_tmp.unlink(missing_ok=True)
     conn = database.connect(db_path)

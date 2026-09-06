@@ -52,5 +52,14 @@ crf = 23
 compose_timeout = 1800
 # glide seconds per grid resize; tiny gaps between finishes degrade to cuts
 morph_seconds = 1.0
+# outro: fades content out, shows completion stats, fades to black
+outro_seconds = 6.0
+outro_fontsize = 72
+outro_fontsize_sub = 54
+completion_profile_url = "https://osucomplete.org/u/19333530/osu-ranked"
+# manual stat overrides (used only if the profile fetch fails)
+# completion_passed = "1,133"
+# completion_left = "147,163"
+# completion_pct = "0.73%"
 fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 daily = "/data/daily"

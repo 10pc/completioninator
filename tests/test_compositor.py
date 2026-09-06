@@ -125,21 +125,44 @@ def test_segment_graph_video_only_aspect():
     assert "pad=1920:1080:0:0:black[vout]" in graph
 
 
+def test_segment_graph_fade_out_param():
+    seg = compositor.Segment(start=0.0, end=60.0, active=[_clip(1, 60.0)])
+    plain = compositor.build_segment_graph(
+        seg, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
+    assert "fade=" not in plain
+    faded = compositor.build_segment_graph(
+        seg, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36, fade_out=1.0)
+    assert "fade=t=out:st=59.000:d=1.000" in faded
+
+
 def test_audio_graph_stacks_all_voiced():
     clips = [_clip(1, 100.0), _clip(2, 60.0)]
-    script, ok = compositor.build_audio_graph(clips)
+    script, ok = compositor.build_audio_graph(clips, 100.0, 106.0)
     assert ok is True
     assert "amix=inputs=2" in script
     assert "[0:a]" in script and "[1:a]" in script
+    assert "afade=t=out:st=98.000:d=2" in script
+    assert "apad=whole_dur=106.000" in script
 
 
 def test_audio_graph_single_and_none():
-    script, ok = compositor.build_audio_graph([_clip(1, 100.0)])
-    assert ok is True and "[aout]" in script and "amix" not in script
+    script, ok = compositor.build_audio_graph([_clip(1, 100.0)], 100.0, 106.0)
+    assert ok is True and "[aout]" in script and "amix=inputs=" not in script
     mute = [_clip(1, 10.0), _clip(2, 20.0)]
     for c in mute:
         c.has_audio = False
-    assert compositor.build_audio_graph(mute) == ("", False)
+    assert compositor.build_audio_graph(mute, 20.0, 26.0) == ("", False)
+
+
+def test_outro_graph_text_fades():
+    graph = compositor.build_outro_graph(1920, 1080, 6.0, "1,133/147,163", "0.73%",
+                                         "/font.ttf", 72, 54)
+    assert "color=black" in graph
+    assert "1\\,133/147\\,163" in graph and "0.73%" in graph  # drawtext escaping
+    assert "fontsize=72" in graph and "fontsize=54" in graph
+    assert "fade=t=in:st=0:d=1.000:alpha=1" in graph
+    assert "fade=t=out:st=5.000:d=1.000:alpha=1" in graph
+    assert graph.rstrip().endswith("[vout]")
 
 
 def test_single_clip_skips_xstack():

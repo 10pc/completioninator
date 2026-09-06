@@ -226,7 +226,7 @@ def drawtext_filter(text: str, fontfile: str, fontsize: int, y: int,
 
 def build_segment_graph(seg: Segment, width: int, grid_h: int,
                          header_h: int, fps: int, header: str, fontfile: str,
-                         fontsize: int) -> str:
+                         fontsize: int, fade_out: float = 0.0) -> str:
     """Video-only graph for one static span. Returns the filter_complex script.
 
     Tiles are exactly 16:9 like the sources, so plain scaling is aspect-exact
@@ -254,8 +254,40 @@ def build_segment_graph(seg: Segment, width: int, grid_h: int,
         chains.append(
             f"{labels}xstack=inputs={k}:layout={layout}:fill=black[vgrid]")
     chains.append(f"[vgrid]{drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)}[vhead]")
-    chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vout]")
+    if fade_out > 0 and seg.length > fade_out:
+        chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vpad]")
+        chains.append(f"[vpad]fade=t=out:st={seg.length - fade_out:.3f}:d={fade_out:.3f}[vout]")
+    else:
+        chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vout]")
     return ";\n".join(chains) + "\n"
+
+
+def build_outro_graph(width: int, height: int, duration: float, line1: str, line2: str,
+                      fontfile: str, title_size: int, sub_size: int) -> str:
+    """Black canvas with two centered stat lines fading in, holding, fading out.
+
+    Single lavfi color input; text alpha is animated (format=rgba + alpha
+    fades) so the lines dissolve in and out instead of popping.
+    """
+    y1 = height // 2 - title_size
+    y2 = height // 2 + 10
+    d_in, d_out = 1.0, 1.0
+    return (
+        f"color=black:size={width}x{height}:rate=30:duration={duration:.3f}[bg];\n"
+        f"[bg]{drawtext_filter(line1, fontfile, title_size, y1)}[t1];\n"
+        f"[t1]{drawtext_filter(line2, fontfile, sub_size, y2)}[t2];\n"
+        f"[t2]format=rgba,fade=t=in:st=0:d={d_in:.3f}:alpha=1,"
+        f"fade=t=out:st={max(0.0, duration - d_out):.3f}:d={d_out:.3f}:alpha=1[vout]\n"
+    )
+
+
+def encode_outro(ffmpeg: str, graph_file: Path, out_path: Path,
+                 preset: str, crf: int, timeout: int) -> None:
+    cmd = ["ffmpeg", "-y", "-v", "error", "-filter_complex_script", str(graph_file),
+           "-map", "[vout]", "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+           "-pix_fmt", "yuv420p", "-r", "30", "-an", str(out_path)]
+    log.info("encoding outro")
+    subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
 
 
 def _interp(a: int, b: int, d: float) -> str:
@@ -293,11 +325,12 @@ def build_morph_graph(span: MorphSpan, clips_by_id: dict, width: int, grid_h: in
     return ";\n".join(chains) + "\n", ordered
 
 
-def build_audio_graph(clips: list[Clip]) -> tuple[str, bool]:
+def build_audio_graph(clips: list[Clip], content_len: float, total_len: float) -> tuple[str, bool]:
     """One continuous mix of every clip that has audio (full timeline, no seeks).
 
     Finished clips fall silent as their inputs end, so the mix naturally
-    thins out exactly like the grid. Returns (script, has_any_audio).
+    thins out exactly like the grid. The tail fades out over the final 2s of
+    content, then silence pads through the outro. Returns (script, has_audio).
     """
     voiced = [c for c in clips if c.has_audio]
     if not voiced:
@@ -306,10 +339,13 @@ def build_audio_graph(clips: list[Clip]) -> tuple[str, bool]:
     for i in range(len(voiced)):
         chains.append(f"[{i}:a]aresample=48000,asetpts=PTS-STARTPTS[a{i}]")
     if len(voiced) == 1:
-        chains.append("[a0]anull[aout]")
+        chains.append("[a0]anull[amix]")
     else:
         labels = "".join(f"[a{i}]" for i in range(len(voiced)))
-        chains.append(f"{labels}amix=inputs={len(voiced)}:duration=longest:normalize=1[aout]")
+        chains.append(f"{labels}amix=inputs={len(voiced)}:duration=longest:normalize=1[amix]")
+    tail = f",afade=t=out:st={max(0.0, content_len - 2):.3f}:d=2" if content_len > 2 else ""
+    chains.append(f"[amix]aformat=sample_rates=48000:channel_layouts=stereo{tail},"
+                  f"apad=whole_dur={total_len:.3f}[aout]")
     return ";\n".join(chains) + "\n", True
 
 

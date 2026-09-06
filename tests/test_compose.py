@@ -65,6 +65,13 @@ def test_compose_happy_path(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setattr(
         compositor, "mux_audio_video",
         lambda ffmpeg, video, audio, out_path, timeout=600: Path(out_path).write_bytes(b"final"))
+    monkeypatch.setattr(
+        compositor, "encode_outro",
+        lambda ffmpeg, graph, out_path, preset, crf, timeout: Path(out_path).write_bytes(b"outro"))
+    from osu_pipeline import completion as completion_mod
+    monkeypatch.setattr(
+        completion_mod, "fetch_completion",
+        lambda url, timeout=30: completion_mod.CompletionStats("1,133", "147,163", "0.73%"))
     # final verification probe
     calls = {"n": 0}
 
@@ -81,6 +88,7 @@ def test_compose_happy_path(tmp_path: Path, monkeypatch, capsys):
     assert main(["--config", str(cfg), "compose"]) == 0
     out_text = capsys.readouterr().out
     assert "batch: 3 clips" in out_text and "morph spans" in out_text
+    assert "outro" in out_text and "completion: 1,133/147,163 (0.73%)" in out_text
 
     conn = database.connect(db)
     try:
@@ -150,6 +158,11 @@ def test_compose_keeps_longest_max_clips(tmp_path: Path, monkeypatch, capsys):
         Path(out_path).write_bytes(b"final")
 
     monkeypatch.setattr(compositor, "mux_audio_video", _mux)
+    from osu_pipeline import completion as completion_mod
+    monkeypatch.setattr(
+        completion_mod, "fetch_completion",
+        lambda url, timeout=30: (_ for _ in ()).throw(
+            completion_mod.CompletionError("offline")))
     assert main(["--config", str(cfg), "compose"]) == 0
     rolled_out = capsys.readouterr().out
     assert "batch: 2 clips" in rolled_out

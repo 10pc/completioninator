@@ -50,6 +50,13 @@ class PipelineConfig:
     video_crf: int = 23
     compose_timeout: int = 1800
     morph_seconds: float = 1.0
+    outro_seconds: float = 6.0
+    outro_fontsize: int = 72
+    outro_fontsize_sub: int = 54
+    completion_profile_url: str = "https://osucomplete.org/u/19333530/osu-ranked"
+    completion_passed: str = ""
+    completion_left: str = ""
+    completion_pct: str = ""
     fontfile: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     daily_dir: Path = Path("/data/daily")
 
@@ -151,6 +158,17 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         compose_timeout = int(video.get("compose_timeout", 1800))
         morph_seconds = float(os.environ.get("PIPELINE_MORPH_SECONDS",
                                              video.get("morph_seconds", 1.0)))
+        outro_seconds = float(video.get("outro_seconds", 6.0))
+        outro_fontsize = int(video.get("outro_fontsize", 72))
+        outro_fontsize_sub = int(video.get("outro_fontsize_sub", 54))
+        completion_profile_url = video.get(
+            "completion_profile_url", "https://osucomplete.org/u/19333530/osu-ranked")
+        completion_passed = os.environ.get("PIPELINE_COMPLETION_PASSED",
+                                           video.get("completion_passed", ""))
+        completion_left = os.environ.get("PIPELINE_COMPLETION_LEFT",
+                                         video.get("completion_left", ""))
+        completion_pct = os.environ.get("PIPELINE_COMPLETION_PCT",
+                                        video.get("completion_pct", ""))
         fontfile = video.get("fontfile", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
         daily_dir = daily_dir or video.get("daily", paths.get("daily", "/data/daily"))
     else:
@@ -169,6 +187,11 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         max_clips = int(max_clips or 12)
         video_preset, video_crf, compose_timeout = "veryfast", 23, 1800
         morph_seconds = float(os.environ.get("PIPELINE_MORPH_SECONDS", 1.0))
+        outro_seconds, outro_fontsize, outro_fontsize_sub = 6.0, 72, 54
+        completion_profile_url = "https://osucomplete.org/u/19333530/osu-ranked"
+        completion_passed = os.environ.get("PIPELINE_COMPLETION_PASSED", "")
+        completion_left = os.environ.get("PIPELINE_COMPLETION_LEFT", "")
+        completion_pct = os.environ.get("PIPELINE_COMPLETION_PCT", "")
         fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         daily_dir = daily_dir or "/data/daily"
 
@@ -204,6 +227,13 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         video_crf=video_crf,
         compose_timeout=compose_timeout,
         morph_seconds=morph_seconds,
+        outro_seconds=outro_seconds,
+        outro_fontsize=outro_fontsize,
+        outro_fontsize_sub=outro_fontsize_sub,
+        completion_profile_url=completion_profile_url,
+        completion_passed=completion_passed,
+        completion_left=completion_left,
+        completion_pct=completion_pct,
         fontfile=fontfile,
         daily_dir=Path(daily_dir),
     )
