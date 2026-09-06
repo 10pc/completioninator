@@ -104,3 +104,80 @@ def test_daily_renders_then_composes(tmp_path: Path, monkeypatch, capsys):
         assert database.get_counts(conn)["composited"] == 1
     finally:
         conn.close()
+
+
+def test_daily_upload_skips_unconfigured_platforms(tmp_path: Path, monkeypatch, capsys):
+    cfg = _base_cfg(tmp_path)
+    stub = _stub_renderer(tmp_path)
+    import osu_pipeline.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: stub)
+    assert main(["--config", str(cfg), "daily", "--limit", "5", "--upload"]) == 0
+    out = capsys.readouterr().out
+    assert "youtube:unconfigured" in out and "instagram:unconfigured" in out
+
+
+def test_daily_upload_publishes_backlog(tmp_path: Path, monkeypatch, capsys):
+    import osu_pipeline.cli as cli_mod
+
+    cfg = _base_cfg(tmp_path)
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    out = tmp_path / "day.mp4"
+    out.write_bytes(b"\x00" * 16)
+    database.record_daily(conn, "2026-09-06", str(out), 3, 100.0, None, None)
+    conn.close()
+    stub = _stub_renderer(tmp_path)
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: stub)
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_ID", "cid")
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_SECRET", "sec")
+
+    calls = []
+
+    def _fake_upload(args, cfg):
+        calls.append((args.day, args.platform))
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_cmd_upload", _fake_upload)
+    assert main(["--config", str(cfg), "daily", "--limit", "5", "--upload"]) == 0
+    assert calls == [("2026-09-06", "youtube")]  # instagram unconfigured, skipped
+    out_text = capsys.readouterr().out
+    assert "uploaded=youtube:ok,instagram:unconfigured" in out_text
+
+
+def test_daily_upload_failure_returns_1(tmp_path: Path, monkeypatch, capsys):
+    import osu_pipeline.cli as cli_mod
+
+    cfg = _base_cfg(tmp_path)
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    out = tmp_path / "day.mp4"
+    out.write_bytes(b"\x00" * 16)
+    database.record_daily(conn, "2026-09-06", str(out), 3, 100.0, None, None)
+    conn.close()
+    stub = _stub_renderer(tmp_path)
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: stub)
+    monkeypatch.setattr(cli_mod, "_cmd_upload", lambda args, cfg: 1)
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_ID", "cid")
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_SECRET", "sec")
+    assert main(["--config", str(cfg), "daily", "--limit", "5", "--upload"]) == 1
+    assert "youtube:failed" in capsys.readouterr().out
+
+
+def test_pending_upload_day_prefers_latest(tmp_path: Path):
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    try:
+        assert database.pending_upload_day(conn, "youtube") is None
+        database.record_daily(conn, "2026-09-01", "/a.mp4", 1, 10.0, None, None)
+        database.record_daily(conn, "2026-09-06", "/b.mp4", 2, 20.0, None, None)
+        assert database.pending_upload_day(conn, "youtube") == "2026-09-06"
+        database.mark_uploaded(conn, "2026-09-06", "youtube", "v", "u")
+        assert database.pending_upload_day(conn, "youtube") == "2026-09-01"
+        database.mark_uploaded(conn, "2026-09-01", "youtube", "v", "u")
+        assert database.pending_upload_day(conn, "youtube") is None
+    finally:
+        conn.close()

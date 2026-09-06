@@ -300,9 +300,11 @@ def mark_uploading(conn: sqlite3.Connection, day: str, platform: str) -> None:
 def mark_uploaded(conn: sqlite3.Connection, day: str, platform: str,
                   remote_id: str, remote_url: str) -> None:
     conn.execute(
-        "UPDATE uploads SET status='uploaded', remote_id=?, remote_url=?, "
-        "uploaded_at=?, error=NULL WHERE day=? AND platform=?",
-        (remote_id, remote_url, _utcnow_iso(), day, platform),
+        "INSERT INTO uploads (day, platform, status, remote_id, remote_url, uploaded_at, created_at) "
+        "VALUES (?, ?, 'uploaded', ?, ?, ?, ?) "
+        "ON CONFLICT(day, platform) DO UPDATE SET status='uploaded', remote_id=excluded.remote_id, "
+        "remote_url=excluded.remote_url, uploaded_at=excluded.uploaded_at, error=NULL",
+        (day, platform, remote_id, remote_url, _utcnow_iso(), _utcnow_iso()),
     )
     conn.commit()
 
@@ -322,3 +324,14 @@ def recent_uploads(conn: sqlite3.Connection, limit: int = 5) -> list:
         "ORDER BY created_at DESC LIMIT ?", (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def pending_upload_day(conn: sqlite3.Connection, platform: str) -> str | None:
+    """Latest daily video with no successful upload on this platform (backlog retry)."""
+    row = conn.execute(
+        "SELECT d.day FROM daily d LEFT JOIN uploads u "
+        "ON u.day = d.day AND u.platform = ? AND u.status = 'uploaded' "
+        "WHERE u.day IS NULL ORDER BY d.day DESC LIMIT 1",
+        (platform,),
+    ).fetchone()
+    return row["day"] if row else None

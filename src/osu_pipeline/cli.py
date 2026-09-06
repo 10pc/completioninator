@@ -51,9 +51,10 @@ def _build_parser() -> argparse.ArgumentParser:
     c.add_argument("--max-clips", type=int, default=None, help="Keep longest N clips (default: config)")
     c.add_argument("--db", default=None, help="Override database path")
 
-    dl = sub.add_parser("daily", help="Nightly close-out: discover, render, compose")
+    dl = sub.add_parser("daily", help="Nightly close-out: discover, render, compose, upload")
     dl.add_argument("--limit", type=int, default=None, help="Max renders (default: config)")
     dl.add_argument("--max-clips", type=int, default=None, help="Keep longest N clips (default: config)")
+    dl.add_argument("--upload", action="store_true", help="Publish backlog to configured platforms")
     dl.add_argument("--scan-root", default=None, help="Override replay directory")
     dl.add_argument("--db", default=None, help="Override database path")
 
@@ -585,9 +586,38 @@ def _cmd_daily(args, cfg) -> int:
         crc = _cmd_compose(argparse.Namespace(db=str(cfg.database_path), max_clips=args.max_clips), cfg)
         composed = "ok" if crc == 0 else "failed"
         print(summary + f" composed={composed}")
-        return crc
-    print(summary + f" composed={composed}")
-    return 0
+        if crc != 0:
+            return crc
+    else:
+        print(summary + f" composed={composed}")
+
+    if not args.upload:
+        return 0
+    # Publish backlog: latest daily per platform missing a success row.
+    results = {}
+    conn = database.connect(cfg.database_path)
+    try:
+        for platform in ("youtube", "instagram"):
+            if platform == "youtube" and not (
+                    cfg.youtube_client_id and cfg.youtube_client_secret):
+                results[platform] = "unconfigured"
+                continue
+            if platform == "instagram" and not (
+                    cfg.instagram_user_id and cfg.instagram_token):
+                results[platform] = "unconfigured"
+                continue
+            day = database.pending_upload_day(conn, platform)
+            if day is None:
+                results[platform] = "nothing"
+                continue
+            ns = argparse.Namespace(db=str(cfg.database_path), day=day,
+                                    platform=platform, force=False)
+            results[platform] = "ok" if _cmd_upload(ns, cfg) == 0 else "failed"
+    finally:
+        conn.close()
+    print(summary + f" composed={composed} uploaded=" +
+          ",".join(f"{p}:{s}" for p, s in results.items()))
+    return 0 if all(s != "failed" for s in results.values()) else 1
 
 
 def _cmd_auth_youtube(args, cfg) -> int:
