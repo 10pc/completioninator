@@ -38,6 +38,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     q = sub.add_parser("requeue", help="Return failed jobs to pending for retry")
     q.add_argument("--db", default=None, help="Override database path")
+
+    st = sub.add_parser("stop", help="Ask a running render loop to stop after its current job")
+    st.add_argument("--db", default=None, help="Override database path")
+
+    pg = sub.add_parser("progress", help="Batch overview for one UTC day")
+    pg.add_argument("day", nargs="?", default=None, help="YYYY-MM-DD (default: today UTC)")
+    pg.add_argument("--db", default=None, help="Override database path")
     return p
 
 
@@ -93,6 +100,19 @@ def _free_gb(path: Path) -> float:
     return shutil.disk_usage(target).free / 1e9
 
 
+def stop_flag_path(cfg) -> Path:
+    """Cooperative-stop sentinel; lives next to the DB so all containers see it."""
+    return Path(cfg.database_path).parent / "stop-render"
+
+
+def _cmd_stop(args, cfg) -> int:
+    flag = stop_flag_path(cfg)
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.touch()
+    print(f"stop requested ({flag}); the render loop exits after the current job")
+    return 0
+
+
 def _cmd_render(args, cfg) -> int:
     db_path = Path(args.db) if args.db else cfg.database_path
     limit = args.limit if args.limit is not None else cfg.render_limit_default
@@ -118,6 +138,10 @@ def _cmd_render(args, cfg) -> int:
         if stale:
             print(f"requeued {stale} stale rendering job(s)")
         for _ in range(limit):
+            if stop_flag_path(cfg).exists():
+                stop_flag_path(cfg).unlink(missing_ok=True)
+                print("stop requested; exiting after current job (none harmed)")
+                break
             free = _free_gb(cfg.rendered_dir)
             if free < cfg.disk_min_free_gb:
                 print(f"disk guard: {free:.1f}GB free < {cfg.disk_min_free_gb}GB minimum; stopping run")
@@ -127,6 +151,9 @@ def _cmd_render(args, cfg) -> int:
             if job is None:
                 break
             _render_one(conn, cfg, renderer, job, override_set_id=args.beatmapset_id, stats=stats)
+    except KeyboardInterrupt:
+        print("\ninterrupted; current job returns to pending on the next run")
+        return 130
     finally:
         conn.close()
     print(f"rendered={stats['rendered']} failed={stats['failed']} skipped_disk={stats['skipped_disk']}")
@@ -221,6 +248,35 @@ def _cmd_requeue(args, cfg) -> int:
     return 0
 
 
+def _cmd_progress(args, cfg) -> int:
+    db_path = Path(args.db) if args.db else cfg.database_path
+    if not db_path.exists():
+        print(f"No database yet at {db_path}.")
+        return 0
+    day = args.day or datetime.now(timezone.utc).date().isoformat()
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    try:
+        summary = database.get_day_summary(conn, day)
+        total = summary.get("total", 0)
+        if total == 0:
+            print(f"Day {day}: no replays.")
+            return 0
+        rendered = summary.get("rendered", 0)
+        pct = 100.0 * rendered / total
+        print(f"Day {day}: total={total} pending={summary.get('pending', 0)} "
+              f"rendering={summary.get('rendering', 0)} rendered={rendered} "
+              f"failed={summary.get('failed', 0)} ({pct:.0f}% rendered)")
+        rendering = database.get_day_jobs(conn, day, "rendering")
+        for j in rendering:
+            print(f"  now rendering: job-{j['id']} {j['path']} (attempt {j['attempts']})")
+        for j in database.get_day_jobs(conn, day, "failed"):
+            print(f"  failed: job-{j['id']} {j['path']}: {(j['error'] or '')[:160]}")
+    finally:
+        conn.close()
+    return 0
+
+
 def main(argv: list | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -241,6 +297,10 @@ def main(argv: list | None = None) -> int:
         return _cmd_render(args, cfg)
     if args.command == "requeue":
         return _cmd_requeue(args, cfg)
+    if args.command == "stop":
+        return _cmd_stop(args, cfg)
+    if args.command == "progress":
+        return _cmd_progress(args, cfg)
     parser.print_help()
     return 2
 

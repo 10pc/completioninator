@@ -159,6 +159,16 @@ def requeue_failed(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+def get_day_jobs(conn: sqlite3.Connection, day: str, status: str) -> list:
+    """Rows for one day+status (progress overview, failure triage)."""
+    rows = conn.execute(
+        "SELECT id, path, attempts, beatmapset_id, render_path, error FROM replays "
+        "WHERE day = ? AND status = ? ORDER BY id",
+        (day, status),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def set_beatmap(conn: sqlite3.Connection, replay_id: int, beatmap_hash: str | None, beatmapset_id: int | None) -> None:
     conn.execute(
         "UPDATE replays SET beatmap_hash = ?, beatmapset_id = ? WHERE id = ?",

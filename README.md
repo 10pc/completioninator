@@ -31,6 +31,20 @@ Steady state is a host cron job (single worker, ~1 min/map at 720p30):
 */30 * * * * cd ~/completioninator && docker compose run --rm pipeline discover && docker compose run --rm pipeline render --limit 25
 ```
 
+Watch a batch and stop it mid-run:
+
+```bash
+docker compose run --rm pipeline progress            # today's UTC batch
+docker compose run --rm pipeline progress 2026-03-29 # any day
+docker compose run --rm pipeline stop                # loop exits after its current job
+```
+
+`stop` drops a sentinel next to the database, so it reaches a running loop
+from any other container invocation; Ctrl+C works too (exit 130). The
+interrupted job returns to `pending` automatically on the next run — nothing
+is ever half-recorded. Per-map timeout defaults to 2h (`timeout_seconds`);
+30-minute+ maps render at ~2.8x, so even those finish with wide headroom.
+
 Each job writes its full danser log to `/data/logs/job-<id>.log` (console shows
 the tail only). Rendering refuses to start below `min_free_disk_gb` free space
 (default 5GB) so a full disk can't corrupt the queue.

@@ -23,7 +23,7 @@ class PipelineConfig:
     danser_home: Path = Path("/opt/danser")
     danser_settings: str = "pipeline"
     danser_extra_args: tuple = ()
-    render_timeout_seconds: int = 1800
+    render_timeout_seconds: int = 7200
     render_max_attempts: int = 3
     render_limit_default: int = 10
     disk_min_free_gb: float = 5.0
@@ -105,7 +105,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         else:
             danser_extra = tuple(a for a in danser_extra.split(",") if a.strip())
         min_free_gb = float(min_free_gb if min_free_gb is not None else render.get("min_free_disk_gb", 5.0))
-        render_timeout = int(render_timeout or render.get("timeout_seconds", 1800))
+        render_timeout = int(render_timeout or render.get("timeout_seconds", 7200))
         render_max_attempts = int(render_max_attempts or render.get("max_attempts", 3))
         limit_default = int(os.environ.get("PIPELINE_RENDER_LIMIT", str(render.get("limit_default", 10))))
         mirror = mirror or beatmaps.get("mirror", "https://mirror.hinamizawa.ai")
@@ -115,7 +115,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         osu_client_id = osu_client_id or osu.get("client_id")
         osu_client_secret = osu_client_secret or osu.get("client_secret")
     else:
-        render_timeout = int(render_timeout or 1800)
+        render_timeout = int(render_timeout or 7200)
         danser_extra = tuple(a for a in (danser_extra or "").split(",") if a.strip())
         min_free_gb = float(min_free_gb or 5.0)
         render_max_attempts = int(render_max_attempts or 3)

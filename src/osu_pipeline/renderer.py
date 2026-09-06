@@ -38,7 +38,7 @@ class DanserRenderer:
         danser_home: Path,
         cmd_prefix: list[str] | None = None,
         settings: str = "pipeline",
-        timeout_seconds: int = 1800,
+        timeout_seconds: int = 7200,
         skip_intro: bool = True,
         videos_subdir: str = "videos",
         extra_args: tuple | list = (),
