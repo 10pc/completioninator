@@ -49,6 +49,7 @@ class PipelineConfig:
     video_preset: str = "veryfast"
     video_crf: int = 23
     compose_timeout: int = 1800
+    morph_seconds: float = 1.0
     fontfile: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     daily_dir: Path = Path("/data/daily")
 
@@ -148,6 +149,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         video_preset = video.get("preset", "veryfast")
         video_crf = int(video.get("crf", 23))
         compose_timeout = int(video.get("compose_timeout", 1800))
+        morph_seconds = float(os.environ.get("PIPELINE_MORPH_SECONDS",
+                                             video.get("morph_seconds", 1.0)))
         fontfile = video.get("fontfile", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
         daily_dir = daily_dir or video.get("daily", paths.get("daily", "/data/daily"))
     else:
@@ -165,6 +168,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         header_extra = header_extra if header_extra is not None else ""
         max_clips = int(max_clips or 12)
         video_preset, video_crf, compose_timeout = "veryfast", 23, 1800
+        morph_seconds = float(os.environ.get("PIPELINE_MORPH_SECONDS", 1.0))
         fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         daily_dir = daily_dir or "/data/daily"
 
@@ -199,6 +203,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         video_preset=video_preset,
         video_crf=video_crf,
         compose_timeout=compose_timeout,
+        morph_seconds=morph_seconds,
         fontfile=fontfile,
         daily_dir=Path(daily_dir),
     )

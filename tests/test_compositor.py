@@ -38,19 +38,54 @@ def test_tile_size_stays_even():
         assert cols * tw <= 1920 and 80 + rows * th <= 1080
 
 
-def test_plan_segments_shrinking_grid():
+def test_plan_timeline_static_and_morphs():
     clips = [_clip(1, 100.0), _clip(2, 60.0), _clip(3, 30.0)]
-    segs = compositor.plan_segments(clips)
-    assert [(s.start, s.end) for s in segs] == [(0.0, 30.0), (30.0, 60.0), (60.0, 100.0)]
-    assert [len(s.active) for s in segs] == [3, 2, 1]
-    assert segs[-1].active[0].id == 1  # longest survives alone
-    # grid positions follow (day, id) order regardless of duration
-    assert [c.id for c in segs[0].active] == [1, 2, 3]
+    spans = compositor.plan_timeline(clips, morph_s=1.0)
+    kinds = [type(s).__name__ for s in spans]
+    # morphs occupy each finish's final second; the rest is static
+    assert kinds == ["Segment", "MorphSpan", "Segment", "MorphSpan", "Segment"], kinds
+    assert [(s.start, s.end) for s in spans] == [
+        (0.0, 29.0), (29.0, 30.0), (30.0, 59.0), (59.0, 60.0), (60.0, 100.0)]
+    total = sum(s.length for s in spans)
+    assert abs(total - 100.0) < 1e-9
+    # first morph: all 3 alive, clip 3 dying
+    morph = spans[1]
+    assert len(morph.tiles) == 3
+    dying = [t for t in morph.tiles if t.dying]
+    assert len(dying) == 1 and dying[0].clip_id == 3
+    assert (dying[0].bw, dying[0].bh) == (8, 8)
+    # final static span holds the longest clip alone
+    assert [c.id for c in spans[-1].active] == [1]
 
 
-def test_plan_segments_equal_durations():
-    segs = compositor.plan_segments([_clip(1, 50.0), _clip(2, 50.0)])
-    assert len(segs) == 1 and len(segs[0].active) == 2
+def test_plan_timeline_tiny_gap_degrades_to_cut():
+    clips = [_clip(1, 100.0), _clip(2, 30.0), _clip(3, 30.1)]
+    spans = compositor.plan_timeline(clips, morph_s=1.0, min_morph=0.25)
+    kinds = [type(s).__name__ for s in spans]
+    # the 0.1s gap between the 30.0 and 30.1 finishes is a hard cut, not a morph
+    assert kinds == ["Segment", "MorphSpan", "Segment", "Segment"], kinds
+    total = sum(s.length for s in spans)
+    assert abs(total - 100.0) < 1e-9
+
+
+def test_plan_timeline_single_clip_no_morph():
+    spans = compositor.plan_timeline([_clip(1, 50.0)])
+    assert len(spans) == 1 and isinstance(spans[0], compositor.Segment)
+
+
+def test_morph_graph_interpolates_and_fades_dying():
+    clips = [_clip(1, 100.0), _clip(2, 60.0), _clip(3, 30.0)]
+    spans = compositor.plan_timeline(clips, morph_s=1.0)
+    morph = spans[1]
+    by_id = {c.id: c for c in clips}
+    script, ordered = compositor.build_morph_graph(
+        morph, by_id, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
+    assert [c.id for c in ordered] == [1, 2, 3]
+    assert "color=black" in script
+    assert "eval=frame" in script
+    assert "min(max(t/1.0" in script  # lerp over the morph duration
+    assert "fade=t=out:st=0:d=1.000:alpha=1" in script  # dying tile
+    assert script.count("overlay=") == 3
 
 
 def test_header_text():
@@ -61,7 +96,7 @@ def test_header_text():
         "06-09-2026 | 1 maps | crest 5.1"
 
 
-def test_segment_graph_video_only_aspect_fade():
+def test_segment_graph_video_only_aspect():
     clips = [_clip(1, 100.0), _clip(2, 60.0, day="2026-09-05")]
     seg = compositor.Segment(start=0.0, end=60.0, active=clips)
     graph = compositor.build_segment_graph(
@@ -69,10 +104,11 @@ def test_segment_graph_video_only_aspect_fade():
     assert "xstack=inputs=2:layout=" in graph
     assert ":fill=black" in graph
     assert "force_original_aspect_ratio=decrease" in graph
-    assert "fade=t=in:st=0" in graph and "fade=t=out" in graph
+    # no fades: morph spans own all transitions; no audio: separate mix
+    assert "fade=" not in graph
     assert "aresample" not in graph and "[aout]" not in graph
     assert "drawtext=" in graph and "HDR" in graph
-    assert "pad=1920:1080:0:0:black[vpad]" in graph
+    assert "pad=1920:1080:0:0:black[vout]" in graph
 
 
 def test_audio_graph_stacks_all_voiced():
@@ -98,4 +134,4 @@ def test_single_clip_skips_xstack():
         seg, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
     assert "xstack" not in graph
     assert "[0:v]scale=1920:1000" in graph
-    assert "fade=t=in" in graph
+    assert "fade=" not in graph

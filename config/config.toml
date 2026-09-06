@@ -50,5 +50,7 @@ max_clips = 12
 preset = "veryfast"
 crf = 23
 compose_timeout = 1800
+# glide seconds per grid resize; tiny gaps between finishes degrade to cuts
+morph_seconds = 1.0
 fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 daily = "/data/daily"

@@ -54,6 +54,9 @@ def test_compose_happy_path(tmp_path: Path, monkeypatch, capsys):
 
     monkeypatch.setattr(compositor, "encode_segment", _encode)
     monkeypatch.setattr(
+        compositor, "encode_morph",
+        lambda ffmpeg, span, ordered, *a, **k: Path(a[4]).write_bytes(b"morph"))
+    monkeypatch.setattr(
         compositor, "concat_segments",
         lambda ffmpeg, segs, out_path, workdir, timeout=600: Path(out_path).write_bytes(b"joined"))
     monkeypatch.setattr(
@@ -77,7 +80,7 @@ def test_compose_happy_path(tmp_path: Path, monkeypatch, capsys):
 
     assert main(["--config", str(cfg), "compose"]) == 0
     out_text = capsys.readouterr().out
-    assert "batch: 3 clips" in out_text and "3 segments" in out_text
+    assert "batch: 3 clips" in out_text and "morph spans" in out_text
 
     conn = database.connect(db)
     try:
@@ -133,6 +136,9 @@ def test_compose_keeps_longest_max_clips(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setattr(
         compositor, "encode_segment",
         lambda ffmpeg, seg, graph, out_path, *a: Path(out_path).write_bytes(b"seg"))
+    monkeypatch.setattr(
+        compositor, "encode_morph",
+        lambda ffmpeg, span, ordered, *a, **k: Path(a[4]).write_bytes(b"morph"))
     monkeypatch.setattr(
         compositor, "concat_segments",
         lambda ffmpeg, segs, out_path, workdir, timeout=600: Path(out_path).write_bytes(b"joined"))

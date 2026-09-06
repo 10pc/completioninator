@@ -414,22 +414,38 @@ def _cmd_compose(args, cfg) -> int:
         suffix += 1
 
     header = compositor.header_text(today, len(kept), span, cfg.header_extra)
-    segments = compositor.plan_segments(kept)
-    print(f"encoding {len(segments)} segments -> {out_path}")
+    grid_h = cfg.video_height - cfg.header_height
+    timeline = compositor.plan_timeline(kept, morph_s=cfg.morph_seconds,
+                                        width=cfg.video_width, grid_h=grid_h,
+                                        header_h=cfg.header_height)
+    n_seg = sum(isinstance(s, compositor.Segment) for s in timeline)
+    n_morph = len(timeline) - n_seg
+    print(f"encoding {n_seg} static + {n_morph} morph spans -> {out_path}")
     seg_paths = []
     video_tmp = workdir / "video.mp4"
     audio_tmp = workdir / "audio.m4a"
+    clips_by_id = {c.id: c for c in kept}
     try:
-        for i, seg in enumerate(segments):
+        for i, span_item in enumerate(timeline):
             seg_path = workdir / f"seg-{i:03d}.mp4"
             graph = workdir / f"seg-{i:03d}.txt"
-            graph.write_text(compositor.build_segment_graph(
-                seg, cfg.video_width, cfg.video_height - cfg.header_height,
-                cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36))
-            seg_timeout = max(600, int(seg.length * 10) + 120)
-            compositor.encode_segment(ffmpeg, seg, graph, seg_path,
-                                      cfg.video_fps, cfg.video_preset, cfg.video_crf,
-                                      min(seg_timeout, cfg.compose_timeout))
+            seg_timeout = max(600, int(span_item.length * 10) + 120)
+            seg_timeout = min(seg_timeout, cfg.compose_timeout)
+            if isinstance(span_item, compositor.MorphSpan):
+                script, ordered = compositor.build_morph_graph(
+                    span_item, clips_by_id, cfg.video_width, grid_h,
+                    cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36)
+                graph.write_text(script)
+                compositor.encode_morph(ffmpeg, span_item, ordered, cfg.video_width, grid_h,
+                                        cfg.header_height, cfg.video_fps, graph, seg_path,
+                                        cfg.video_preset, cfg.video_crf, seg_timeout)
+            else:
+                graph.write_text(compositor.build_segment_graph(
+                    span_item, cfg.video_width, grid_h,
+                    cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36))
+                compositor.encode_segment(ffmpeg, span_item, graph, seg_path,
+                                          cfg.video_fps, cfg.video_preset, cfg.video_crf,
+                                          seg_timeout)
             seg_paths.append(seg_path)
         compositor.concat_segments(ffmpeg, seg_paths, video_tmp, workdir)
         audio_script, has_audio = compositor.build_audio_graph(kept)
