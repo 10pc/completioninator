@@ -10,6 +10,7 @@ from osu_pipeline import completion
 
 HTML = """
 <html><body>
+<script>/* % maps passed 0.76% --> stale decoy, must not match */</script>
 <h2>% completed</h2><div>0.73%</div>
 <h2>completion progress</h2>
 <span>maps passed</span><span>1,133</span>

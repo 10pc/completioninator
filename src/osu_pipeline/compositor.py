@@ -272,12 +272,14 @@ def build_outro_graph(width: int, height: int, duration: float, line1: str, line
     y1 = height // 2 - title_size
     y2 = height // 2 + 10
     d_in, d_out = 1.0, 1.0
+    # Plain luma fades (NOT alpha): on a black canvas they are visually
+    # identical, and alpha fade-outs silently do nothing on some builds.
     return (
         f"color=black:size={width}x{height}:rate=30:duration={duration:.3f}[bg];\n"
         f"[bg]{drawtext_filter(line1, fontfile, title_size, y1)}[t1];\n"
         f"[t1]{drawtext_filter(line2, fontfile, sub_size, y2)}[t2];\n"
-        f"[t2]format=rgba,fade=t=in:st=0:d={d_in:.3f}:alpha=1,"
-        f"fade=t=out:st={max(0.0, duration - d_out):.3f}:d={d_out:.3f}:alpha=1[vout]\n"
+        f"[t2]fade=t=in:st=0:d={d_in:.3f},"
+        f"fade=t=out:st={max(0.0, duration - d_out):.3f}:d={d_out:.3f}[vout]\n"
     )
 
 

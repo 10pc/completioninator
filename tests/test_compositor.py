@@ -159,9 +159,9 @@ def test_outro_graph_text_fades():
                                          "/font.ttf", 72, 54)
     assert "color=black" in graph
     assert "1\\,133/147\\,163" in graph and "0.73%" in graph  # drawtext escaping
-    assert "fontsize=72" in graph and "fontsize=54" in graph
-    assert "fade=t=in:st=0:d=1.000:alpha=1" in graph
-    assert "fade=t=out:st=5.000:d=1.000:alpha=1" in graph
+    assert "fade=t=in:st=0:d=1.000" in graph
+    assert "fade=t=out:st=5.000:d=1.000" in graph
+    assert "alpha=1" not in graph  # plain luma fades: alpha-out is a no-op upstream
     assert graph.rstrip().endswith("[vout]")
 
 

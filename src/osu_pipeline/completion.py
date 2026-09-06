@@ -34,9 +34,12 @@ class CompletionStats:
         return self.pct
 
 
+# The page embeds a stale "% maps passed X.XX%" JS comment before the real
+# figures, so plain ([\d,]+) would catch the decoy's "0". Anchor on a real
+# thousands value NOT followed by more number chars, a dot, or a % sign.
 _PATTERNS = {
-    "passed": re.compile(r"maps\s+passed\s*([\d,]+)", re.IGNORECASE),
-    "left": re.compile(r"maps\s+left\s*([\d,]+)", re.IGNORECASE),
+    "passed": re.compile(r"maps\s+passed\s*([\d,]+)(?![\d.,%])", re.IGNORECASE),
+    "left": re.compile(r"maps\s+left\s*([\d,]+)(?![\d.,%])", re.IGNORECASE),
     "pct": re.compile(r"%\s*completed\s*([\d.]+%)", re.IGNORECASE),
 }
 
