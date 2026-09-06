@@ -228,3 +228,44 @@ def test_auth_flow_binds_configured_host(tmp_path: Path, monkeypatch):
     assert seen["host"] == "localhost" and seen["port"] == 8091
     assert seen["bind_addr"] == "0.0.0.0"
     assert (tmp_path / "tok.json").exists()
+
+
+def test_extract_code_from_url_and_bare():
+    url = ("http://localhost:8091/?state=abc&code=4/0XYZ-123_abc&scope=x")
+    assert uploader._extract_code(url) == "4/0XYZ-123_abc"
+    assert uploader._extract_code("  4/0XYZ-123_abc  ") == "4/0XYZ-123_abc"
+    with pytest.raises(uploader.UploadError):
+        uploader._extract_code("http://localhost:8091/?state=abc")
+    with pytest.raises(uploader.UploadError):
+        uploader._extract_code("")
+
+
+def test_auth_manual_full_roundtrip(tmp_path: Path, monkeypatch, capsys):
+    import google_auth_oauthlib.flow as flow_mod
+
+    seen = {}
+
+    class _FakeFlow:
+        def __init__(self, *a, **k):
+            seen["redirect"] = k.get("redirect_uri")
+
+        @classmethod
+        def from_client_config(cls, config, scopes, **kwargs):
+            assert config["installed"]["client_id"] == "cid"
+            return cls(**kwargs)
+
+        def authorization_url(self, **kwargs):
+            return "https://accounts.google.com/auth?x=1", None
+
+        def fetch_token(self, code=None):
+            seen["code"] = code
+            self.credentials = type("C", (), {"to_json": lambda self: "{}"})()
+
+    monkeypatch.setattr(flow_mod, "Flow", _FakeFlow)
+    monkeypatch.setattr("builtins.input", lambda prompt="": (
+        "http://localhost:8091/?state=s&code=4/0TESTCODE&scope=y"))
+    uploader.run_auth_manual("cid", "sec", tmp_path / "tok.json", port=8091)
+    assert seen["code"] == "4/0TESTCODE"
+    assert "localhost:8091" in seen["redirect"]
+    assert (tmp_path / "tok.json").exists()
+    assert "approve" in capsys.readouterr().out

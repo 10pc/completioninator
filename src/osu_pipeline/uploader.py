@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+import urllib.parse
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,49 @@ def _client_config(client_id: str, client_secret: str) -> dict:
             "redirect_uris": ["http://localhost"],
         }
     }
+
+
+def _extract_code(text: str) -> str:
+    """Accept a full callback URL or a bare authorization code."""
+    text = text.strip().strip("\"'")
+    parsed = urllib.parse.urlparse(text)
+    if parsed.query:
+        code = urllib.parse.parse_qs(parsed.query).get("code", [None])[0]
+        if code:
+            return code
+    if parsed.scheme or parsed.netloc:
+        raise UploadError("pasted URL has no authorization code (approval may have failed)")
+    if not text or len(text) > 512 or " " in text:
+        raise UploadError("could not find an authorization code in the pasted text")
+    return text
+
+
+def run_auth_manual(client_id: str, client_secret: str, token_path: Path,
+                    port: int = 8080) -> None:
+    """Manual authorization: print URL, read pasted callback from stdin.
+
+    For environments where the browser cannot reach a local callback server
+    (proxied desktops, VNC quirks): approve in ANY browser, copy the
+    unreachable localhost URL from the address bar, paste it here. No local
+    server binds, so no published ports are needed.
+    """
+    from google_auth_oauthlib.flow import Flow
+
+    flow = Flow.from_client_config(
+        _client_config(client_id, client_secret), SCOPES,
+        redirect_uri=f"http://localhost:{port}/")
+    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+    print("Open this URL, approve, then paste the full localhost URL back here:")
+    print(auth_url)
+    try:
+        pasted = input("callback URL or code: ")
+    except EOFError as exc:
+        raise UploadError("no callback pasted (empty stdin)") from exc
+    flow.fetch_token(code=_extract_code(pasted))
+    token_path = Path(token_path)
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.write_text(flow.credentials.to_json())
+    print(f"authorized; credentials saved to {token_path}")
 
 
 def run_auth_flow(client_id: str, client_secret: str, token_path: Path,

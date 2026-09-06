@@ -60,6 +60,8 @@ def _build_parser() -> argparse.ArgumentParser:
     au = sub.add_parser("auth-youtube", help="One-time browser authorization for uploads")
     au.add_argument("--port", type=int, default=8080, help="Local callback port (publish it)")
     au.add_argument("--host", default="localhost", help="Redirect hostname (server binds all interfaces)")
+    au.add_argument("--manual", action="store_true",
+                    help="Print URL and read pasted callback from stdin (no callback server)")
     au.add_argument("--db", default=None, help="Override database path")
 
     up = sub.add_parser("upload", help="Upload a daily video")
@@ -599,6 +601,10 @@ def _cmd_auth_youtube(args, cfg) -> int:
           "approve, and wait for the callback "
           f"(publish port with: docker compose run --rm -p 127.0.0.1:{args.port}:{args.port} "
           f"pipeline auth-youtube --port {args.port})")
+    if args.manual:
+        uploader.run_auth_manual(cfg.youtube_client_id, cfg.youtube_client_secret,
+                                 cfg.youtube_token_path, port=args.port)
+        return 0
     uploader.run_auth_flow(cfg.youtube_client_id, cfg.youtube_client_secret,
                            cfg.youtube_token_path, port=args.port, host=args.host)
     return 0
