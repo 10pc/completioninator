@@ -42,6 +42,7 @@ class DanserRenderer:
         skip_intro: bool = True,
         videos_subdir: str = "videos",
         extra_args: tuple | list = (),
+        skin: str | None = None,
     ) -> None:
         self.danser_home = Path(danser_home)
         self.binary = self.danser_home / "danser-cli"
@@ -51,6 +52,8 @@ class DanserRenderer:
         self.skip_intro = skip_intro
         self.extra_args = list(extra_args)
         self.videos_dir = self.danser_home / videos_subdir
+        if skin:
+            ensure_skin(self.danser_home, settings, skin)
 
     def output_for(self, job_stem: str) -> Path:
         return self.videos_dir / f"{job_stem}.mp4"
@@ -101,6 +104,31 @@ class DanserRenderer:
         if not ok:
             return RenderResult(False, None, log_text, error=f"output failed verification: {expected}")
         return RenderResult(True, expected, log_text, duration)
+
+
+def ensure_skin(danser_home: Path, settings: str, skin: str) -> None:
+    """Point danser's settings profile at the configured skin (merge, keep rest).
+
+    danser rewrites this file on every run, so the repo copy stays the source
+    of truth and this merge re-applies the selection each time.
+    """
+    settings_dir = Path(danser_home) / "settings"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    profile = settings_dir / f"{settings}.json"
+    try:
+        data = json.loads(profile.read_text(encoding="utf-8")) if profile.exists() else {}
+    except (OSError, ValueError) as exc:
+        log.warning("could not read %s (%s); starting fresh", profile, exc)
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    skin_section = data.get("Skin")
+    if not isinstance(skin_section, dict):
+        skin_section = {}
+        data["Skin"] = skin_section
+    skin_section["CurrentSkin"] = skin
+    profile.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    log.info("danser skin -> %s (%s)", skin, profile)
 
 
 def verify_output(mp4: Path) -> tuple[bool, float | None]:

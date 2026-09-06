@@ -1,11 +1,12 @@
 """Renderer + render-queue tests use a stub danser (no GPU/binary needed)."""
 
+import json
 import sqlite3
 import sys
 from pathlib import Path
 
 from osu_pipeline import database
-from osu_pipeline.renderer import DanserRenderer, verify_output
+from osu_pipeline.renderer import DanserRenderer, ensure_skin, verify_output
 
 # Stub danser: understands -out=<stem>, writes <cwd>/videos/<stem>.mp4.
 STUB = """
@@ -179,3 +180,32 @@ def test_migration_adds_m2_columns(tmp_path: Path):
         assert {"beatmap_hash", "beatmapset_id", "render_path"} <= cols
     finally:
         conn.close()
+
+
+def test_ensure_skin_merges_and_preserves(tmp_path: Path):
+    home = tmp_path / "danser"
+    (home / "settings").mkdir(parents=True)
+    profile = home / "settings" / "pipeline.json"
+    profile.write_text(json.dumps({"Recording": {"FPS": 30}, "Skin": {"CurrentSkin": "old"}}))
+    ensure_skin(home, "pipeline", "MySkin")
+    data = json.loads(profile.read_text())
+    assert data["Skin"]["CurrentSkin"] == "MySkin"
+    assert data["Recording"] == {"FPS": 30}  # untouched sections preserved
+
+
+def test_ensure_skin_creates_and_repairs(tmp_path: Path):
+    home = tmp_path / "danser"
+    ensure_skin(home, "pipeline", "Fresh")
+    profile = home / "settings" / "pipeline.json"
+    assert json.loads(profile.read_text())["Skin"]["CurrentSkin"] == "Fresh"
+    profile.write_text("not json{{{")
+    ensure_skin(home, "pipeline", "Fixed")
+    assert json.loads(profile.read_text())["Skin"]["CurrentSkin"] == "Fixed"
+
+
+def test_renderer_applies_skin_on_init(tmp_path: Path):
+    home = tmp_path / "danser"
+    home.mkdir()
+    DanserRenderer(danser_home=home, cmd_prefix=[sys.executable, "stub"], skin="Custom")
+    data = json.loads((home / "settings" / "pipeline.json").read_text())
+    assert data["Skin"]["CurrentSkin"] == "Custom"

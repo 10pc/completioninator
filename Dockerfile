@@ -52,8 +52,9 @@ COPY danser/ ./danser/
 
 RUN pip install --no-cache-dir -e . \
     && chmod +x scripts/entrypoint.sh \
-    && mkdir -p /opt/danser/settings /opt/danser/videos \
+    && mkdir -p /opt/danser/settings /opt/danser/videos /opt/danser/skins \
     && cp ./danser/settings/pipeline.json /opt/danser/settings/pipeline.json \
+    && cp -r ./danser/skins/. /opt/danser/skins/ \
     && useradd --create-home --uid 1000 app \
     && mkdir -p /data/db /data/working /data/rendered /data/daily /data/logs /data/beatmaps/songs \
     && chown -R app:app /app /data /opt/danser

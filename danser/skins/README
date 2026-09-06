@@ -1,0 +1,5 @@
+Drop an unpacked osu! skin folder here, e.g. danser/skins/MySkin/skin.ini.
+The whole directory is baked into the image at /opt/danser/skins, and the
+name is selected via [render] skin in config.toml (default: default).
+Export from osu! (.osk files are zips — unzip them) or copy from the game's
+Skins folder. See README "danser look" section.

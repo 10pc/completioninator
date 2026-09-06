@@ -22,6 +22,7 @@ class PipelineConfig:
     # render (Milestone 2+3)
     danser_home: Path = Path("/opt/danser")
     danser_settings: str = "pipeline"
+    danser_skin: str = "default"
     danser_extra_args: tuple = ()
     render_timeout_seconds: int = 7200
     render_max_attempts: int = 3
@@ -105,6 +106,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     min_age = int(os.environ.get("PIPELINE_MIN_AGE_SECONDS", "5"))
     danser_home = os.environ.get("PIPELINE_DANSER_HOME")
     danser_settings = os.environ.get("PIPELINE_DANSER_SETTINGS")
+    danser_skin = os.environ.get("PIPELINE_DANSER_SKIN")
     danser_extra = os.environ.get("PIPELINE_DANSER_EXTRA_ARGS")
     working = os.environ.get("PIPELINE_WORKING_DIR")
     rendered = os.environ.get("PIPELINE_RENDERED_DIR")
@@ -146,6 +148,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         min_age = pipeline.get("min_age_seconds", min_age) if "PIPELINE_MIN_AGE_SECONDS" not in os.environ else min_age
         danser_home = danser_home or render.get("danser_home", "/opt/danser")
         danser_settings = danser_settings or render.get("settings", "pipeline")
+        danser_skin = danser_skin or render.get("skin", "default")
         if danser_extra is None:
             extra_cfg = render.get("extra_args", [])
             danser_extra = tuple(extra_cfg) if isinstance(extra_cfg, list) else ()
@@ -241,6 +244,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         min_age_seconds=min_age,
         danser_home=Path(danser_home or "/opt/danser"),
         danser_settings=danser_settings or "pipeline",
+        danser_skin=danser_skin or "default",
         danser_extra_args=danser_extra,
         render_timeout_seconds=render_timeout,
         render_max_attempts=render_max_attempts,

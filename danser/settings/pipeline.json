@@ -4,6 +4,12 @@
     "OsuSkinsDir": "/opt/danser/skins",
     "UnpackOszFiles": true
   },
+  "Skin": {
+    "CurrentSkin": "default",
+    "FallbackSkin": "default",
+    "UseColorsFromSkin": false,
+    "UseBeatmapColors": false
+  },
   "Recording": {
     "FrameWidth": 1280,
     "FrameHeight": 720,

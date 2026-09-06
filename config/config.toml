@@ -12,6 +12,8 @@ min_age_seconds = 5
 [render]
 danser_home = "/opt/danser"
 settings = "pipeline"
+# Skin folder name under danser/skins (baked into the image; default skin if empty).
+skin = "default"
 # extra danser-cli flags, e.g. ["-noupdatecheck"] once verified (see README).
 # WARNING: never add "-nodbcheck" — danser must import newly downloaded maps.
 extra_args = []

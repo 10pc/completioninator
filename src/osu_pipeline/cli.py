@@ -211,6 +211,7 @@ def run_render(cfg, limit: int, beatmapset_id: int | None = None,
         settings=cfg.danser_settings,
         timeout_seconds=cfg.render_timeout_seconds,
         extra_args=cfg.danser_extra_args,
+        skin=cfg.danser_skin,
     )
     if not Path(renderer.cmd_prefix[0]).exists():
         print(f"danser not found: {renderer.cmd_prefix[0]} (PIPELINE_DANSER_HOME={cfg.danser_home})",

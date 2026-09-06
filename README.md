@@ -131,6 +131,42 @@ Only `.osr` files carry a beatmap MD5 (no beatmap id inside), so hash
 resolution is the only replay-native key — the manual escape hatch is
 `render --beatmapset-id <id>` when you know the set.
 
+danser look — gameplay config and skins:
+
+```bash
+# gameplay visuals live in danser/settings/pipeline.json (sections General,
+# Recording, Skin, Gameplay, ...). Partial files are fine: danser fills
+# defaults for missing keys, and it rewrites the file on every run, so the
+# repo copy stays the source of truth.
+```
+
+Useful `Gameplay` toggles (every HUD element takes `Show`/`Scale`/`Opacity`):
+`Score`, `HpBar`, `ComboCounter`, `PPCounter`, `HitCounter`,
+`HitErrorMeter`, `KeyOverlay`, `ScoreBoard`, `StrainGraph`, `Mods`,
+`ShowResultsScreen` (+`ResultsScreenTime`), `Underlay.Path` (PNG backdrop).
+`Skin` section: `CurrentSkin`, `UseColorsFromSkin`, `UseBeatmapColors`,
+plus `Cursor` (`UseSkinCursor`, `Scale`, `TrailScale`, `ForceLongTrail`).
+CLI flags the pipeline already passes per render: `-replay=… -record
+-out=… -settings=pipeline -skip`, plus anything in `[render] extra_args`.
+
+Custom skin:
+
+```bash
+# 1. Unpack your skin (.osk files are zips) into the repo:
+#    danser/skins/MySkin/skin.ini (+ assets)
+# 2. Select it:
+#    config.toml [render] skin = "MySkin"   (or PIPELINE_DANSER_SKIN)
+# 3. Rebuild so the image picks up the folder:
+docker compose build
+docker compose run --rm pipeline render --limit 1
+```
+
+The renderer merges `CurrentSkin` into the container's settings profile on
+every run ( danser would otherwise keep whichever skin it saw last). If a
+render still shows the default skin, check `/data/logs/job-<id>.log` for
+`SkinManager: Skin "..." loaded` — a misspelled folder name falls back
+silently.
+
 YouTube uploads (one-time setup, then automatic):
 
 ```bash
