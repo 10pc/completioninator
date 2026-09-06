@@ -56,7 +56,10 @@ mid-morph, since lerps between 16:9 boxes can't distort. Grids are centered,
 ragged rows included. Resizes animate as 1s glides (dying tiles shrink out);
 audio is one continuous mix of all playing clips, so segment joins never
 glitch it. Header reads `dd-mm-yyyy | X maps` (`header_extra` appends future
-API-sourced data).
+API-sourced data). The video ends with an outro: content fades out, then live
+completion stats from the osucomplete profile (`1,133/147,163` + `0.73%`)
+fade in over black, hold, and fade out. Manual `[video] completion_*` values
+cover a fetch outage; with neither, the video simply ends after the last clip.
 
 `stop` drops a sentinel next to the database, so it reaches a running loop
 from any other container invocation; Ctrl+C works too (exit 130). The
