@@ -144,6 +144,23 @@ with backoff, and every upload is recorded in SQLite so restarts can't
 duplicate. Refresh tokens renew silently; re-run `auth-youtube` only if
 Google revokes access.
 
+Instagram uploads (feed VIDEO posts — landscape dailies aren't Reels-shaped):
+
+```bash
+# 1. Meta: professional IG account + linked FB Page + app User token with
+#    instagram_basic, instagram_content_publish (+ pages perms). Set in
+#    compose.override.yml environment (never in git):
+#      PIPELINE_INSTAGRAM_USER_ID: "178414..."
+#      PIPELINE_INSTAGRAM_TOKEN: "..."
+# 2. Publish (bytes upload straight from the server, no public URL needed):
+docker compose run --rm pipeline upload 2026-09-06 --platform instagram
+```
+
+Each publish is container-create → byte upload → status poll → publish →
+permalink, all tracked in the same `uploads` table (`youtube` and
+`instagram` rows per day are independent). Tokens live ~60 days; an error
+mentioning expiry means re-issue. `--force` re-publishes either platform.
+
 Failure triage (`progress` shows the short form, `/data/logs/job-<id>.log`
 the full danser output):
 

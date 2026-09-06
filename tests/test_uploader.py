@@ -148,7 +148,7 @@ def test_cli_upload_happy_path_and_duplicate_skip(tmp_path: Path, monkeypatch, c
     assert "youtu.be/v1" in capsys.readouterr().out
     # second run skips without calling upload again
     assert main(["--config", str(cfg), "upload", "2026-09-06"]) == 0
-    assert "already uploaded" in capsys.readouterr().out
+    assert "already on youtube" in capsys.readouterr().out
     assert calls["n"] == 1
     # --force re-uploads
     assert main(["--config", str(cfg), "upload", "2026-09-06", "--force"]) == 0

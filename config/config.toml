@@ -74,3 +74,13 @@ token_path = "/data/db/youtube-token.json"
 privacy = "unlisted"
 category_id = "20"
 title_template = "OSU! Completionist — {day} ({clips} maps)"
+
+[instagram]
+# Token + user ID ONLY via env (this file is committed):
+#   PIPELINE_INSTAGRAM_USER_ID / PIPELINE_INSTAGRAM_TOKEN
+# Needs: IG professional account + linked FB Page + Meta app token with
+# instagram_basic, instagram_content_publish (+ pages perms). Feed VIDEO posts
+# (landscape dailies are not Reels-shaped). Tokens live ~60 days; a 190 error
+# means re-issue.
+api_version = "v25.0"
+caption_template = "OSU! Completionist — {day} ({clips} maps)"

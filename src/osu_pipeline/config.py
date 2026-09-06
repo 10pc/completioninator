@@ -64,6 +64,11 @@ class PipelineConfig:
     youtube_privacy: str = "unlisted"
     youtube_category_id: str = "20"
     youtube_title_template: str = "OSU! Completionist — {day} ({clips} maps)"
+    # instagram (Milestone 7; token via env ONLY)
+    instagram_user_id: str | None = None
+    instagram_token: str | None = None
+    instagram_api_version: str = "v25.0"
+    instagram_caption_template: str = "OSU! Completionist — {day} ({clips} maps)"
     fontfile: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     daily_dir: Path = Path("/data/daily")
 
@@ -118,6 +123,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     youtube_client_secret = os.environ.get("PIPELINE_YOUTUBE_CLIENT_SECRET")
     youtube_token_path = os.environ.get("PIPELINE_YOUTUBE_TOKEN_PATH")
     youtube_privacy = os.environ.get("PIPELINE_YOUTUBE_PRIVACY")
+    instagram_user_id = os.environ.get("PIPELINE_INSTAGRAM_USER_ID")
+    instagram_token = os.environ.get("PIPELINE_INSTAGRAM_TOKEN")
     render_timeout = os.environ.get("PIPELINE_RENDER_TIMEOUT")
     render_max_attempts = os.environ.get("PIPELINE_RENDER_MAX_ATTEMPTS")
 
@@ -189,6 +196,11 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_category_id = youtube.get("category_id", "20")
         youtube_title_template = youtube.get(
             "title_template", "OSU! Completionist — {day} ({clips} maps)")
+        instagram = data.get("instagram", {})
+        instagram_user_id = instagram_user_id or instagram.get("user_id")
+        instagram_api_version = instagram.get("api_version", "v25.0")
+        instagram_caption_template = instagram.get(
+            "caption_template", "OSU! Completionist — {day} ({clips} maps)")
     else:
         render_timeout = int(render_timeout or 7200)
         danser_extra = tuple(a for a in (danser_extra or "").split(",") if a.strip())
@@ -213,6 +225,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_token_path = youtube_token_path or "/data/db/youtube-token.json"
         youtube_privacy = youtube_privacy or "unlisted"
         youtube_category_id, youtube_title_template = "20", "OSU! Completionist — {day} ({clips} maps)"
+        instagram_api_version, instagram_caption_template = (
+            "v25.0", "OSU! Completionist — {day} ({clips} maps)")
         fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         daily_dir = daily_dir or "/data/daily"
 
@@ -263,4 +277,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_privacy=youtube_privacy or "unlisted",
         youtube_category_id=youtube_category_id,
         youtube_title_template=youtube_title_template,
+        instagram_user_id=instagram_user_id,
+        instagram_token=instagram_token,
+        instagram_api_version=instagram_api_version,
+        instagram_caption_template=instagram_caption_template,
     )

@@ -61,8 +61,9 @@ def _build_parser() -> argparse.ArgumentParser:
     au.add_argument("--port", type=int, default=8080, help="Local callback port (publish it)")
     au.add_argument("--db", default=None, help="Override database path")
 
-    up = sub.add_parser("upload", help="Upload a daily video to YouTube")
+    up = sub.add_parser("upload", help="Upload a daily video")
     up.add_argument("day", help="YYYY-MM-DD of the daily video")
+    up.add_argument("--platform", choices=("youtube", "instagram"), default="youtube")
     up.add_argument("--force", action="store_true", help="Re-upload even if recorded")
     up.add_argument("--db", default=None, help="Override database path")
     return p
@@ -606,12 +607,13 @@ def _cmd_upload(args, cfg) -> int:
     from . import uploader
 
     db_path = Path(args.db) if args.db else cfg.database_path
+    platform = args.platform
     database.init_db(db_path)
     conn = database.connect(db_path)
     try:
-        existing = database.get_upload(conn, args.day, "youtube")
+        existing = database.get_upload(conn, args.day, platform)
         if existing and existing["status"] == "uploaded" and not args.force:
-            print(f"day {args.day} already uploaded: {existing.get('remote_url')} (use --force)")
+            print(f"day {args.day} already on {platform}: {existing.get('remote_url')} (use --force)")
             return 0
         row = conn.execute("SELECT * FROM daily WHERE day = ?", (args.day,)).fetchone()
         if row is None:
@@ -621,38 +623,73 @@ def _cmd_upload(args, cfg) -> int:
         if not video.exists():
             print(f"daily file missing: {video}", file=sys.stderr)
             return 2
-        if not cfg.youtube_client_id or not cfg.youtube_client_secret:
-            print("youtube client ID/secret not configured", file=sys.stderr)
-            return 2
-        creds = uploader.load_credentials(cfg.youtube_token_path)
-        if creds is None:
-            print(f"not authorized; run auth-youtube first (token: {cfg.youtube_token_path})",
-                  file=sys.stderr)
-            return 2
-        title = uploader.render_title(cfg.youtube_title_template, args.day,
-                                      row["clips"], row["span"])
-        description = (
-            f"osu!standard completionist daily grid — {row['clips']} maps "
-            f"({row['span'] or args.day}).\n"
-            + (f"Completion at compose time: {row['passed']}/{row['left']} ({row['pct']}).\n"
-               if row["passed"] else "")
-            + "Rendered with danser; composed by the completioninator pipeline."
-        )
-        database.mark_uploading(conn, args.day, "youtube")
-        service = uploader.build_service(creds)
-        try:
-            video_id = uploader.upload_video(
-                service, video, title, description,
-                cfg.youtube_category_id, cfg.youtube_privacy)
-        except uploader.UploadError as exc:
-            database.mark_upload_failed(conn, args.day, "youtube", str(exc)[-500:])
-            print(f"upload FAILED: {exc}", file=sys.stderr)
-            return 1
-        url = uploader.video_url(video_id)
-        database.mark_uploaded(conn, args.day, "youtube", video_id, url)
-        print(f"uploaded {args.day} -> {url}")
+        if platform == "youtube":
+            return _upload_youtube(conn, cfg, args, dict(row), video)
+        return _upload_instagram(conn, cfg, args, dict(row), video)
     finally:
         conn.close()
+
+
+def _upload_youtube(conn, cfg, args, row: dict, video: Path) -> int:
+    from . import uploader
+
+    if not cfg.youtube_client_id or not cfg.youtube_client_secret:
+        print("youtube client ID/secret not configured", file=sys.stderr)
+        return 2
+    creds = uploader.load_credentials(cfg.youtube_token_path)
+    if creds is None:
+        print(f"not authorized; run auth-youtube first (token: {cfg.youtube_token_path})",
+              file=sys.stderr)
+        return 2
+    title = uploader.render_title(cfg.youtube_title_template, args.day,
+                                  row["clips"], row["span"])
+    description = (
+        f"osu!standard completionist daily grid — {row['clips']} maps "
+        f"({row['span'] or args.day}).\n"
+        + (f"Completion at compose time: {row['passed']}/{row['left']} ({row['pct']}).\n"
+           if row["passed"] else "")
+        + "Rendered with danser; composed by the completioninator pipeline."
+    )
+    database.mark_uploading(conn, args.day, "youtube")
+    service = uploader.build_service(creds)
+    try:
+        video_id = uploader.upload_video(
+            service, video, title, description,
+            cfg.youtube_category_id, cfg.youtube_privacy)
+    except uploader.UploadError as exc:
+        database.mark_upload_failed(conn, args.day, "youtube", str(exc)[-500:])
+        print(f"upload FAILED: {exc}", file=sys.stderr)
+        return 1
+    url = uploader.video_url(video_id)
+    database.mark_uploaded(conn, args.day, "youtube", video_id, url)
+    print(f"uploaded {args.day} -> {url}")
+    return 0
+
+
+def _upload_instagram(conn, cfg, args, row: dict, video: Path) -> int:
+    from . import instagram
+
+    if not cfg.instagram_user_id or not cfg.instagram_token:
+        print("instagram user ID/token not configured "
+              "(PIPELINE_INSTAGRAM_USER_ID / PIPELINE_INSTAGRAM_TOKEN)", file=sys.stderr)
+        return 2
+    caption = cfg.instagram_caption_template.format(
+        day=args.day, clips=row["clips"], span=row["span"] or args.day)
+    database.mark_uploading(conn, args.day, "instagram")
+    try:
+        media_id, link = instagram.publish_video(
+            cfg.instagram_api_version, cfg.instagram_user_id,
+            cfg.instagram_token, video, caption)
+    except instagram.InstagramError as exc:
+        if "190" in str(exc) or "expired" in str(exc).lower() or "invalid" in str(exc).lower():
+            hint = " (token expired or invalid: re-issue a long-lived token)"
+        else:
+            hint = ""
+        database.mark_upload_failed(conn, args.day, "instagram", str(exc)[-500:])
+        print(f"upload FAILED: {exc}{hint}", file=sys.stderr)
+        return 1
+    database.mark_uploaded(conn, args.day, "instagram", media_id, link)
+    print(f"uploaded {args.day} -> {link or media_id}")
     return 0
 
 
