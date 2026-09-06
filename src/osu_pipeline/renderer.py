@@ -38,9 +38,10 @@ class DanserRenderer:
         danser_home: Path,
         cmd_prefix: list[str] | None = None,
         settings: str = "pipeline",
-        timeout_seconds: int = 600,
+        timeout_seconds: int = 1800,
         skip_intro: bool = True,
         videos_subdir: str = "videos",
+        extra_args: tuple | list = (),
     ) -> None:
         self.danser_home = Path(danser_home)
         self.binary = self.danser_home / "danser-cli"
@@ -48,6 +49,7 @@ class DanserRenderer:
         self.settings = settings
         self.timeout_seconds = timeout_seconds
         self.skip_intro = skip_intro
+        self.extra_args = list(extra_args)
         self.videos_dir = self.danser_home / videos_subdir
 
     def output_for(self, job_stem: str) -> Path:
@@ -72,6 +74,7 @@ class DanserRenderer:
         ]
         if self.skip_intro:
             cmd.append("-skip")
+        cmd.extend(self.extra_args)
         log.info("rendering %s: %s", job_stem, " ".join(cmd))
         try:
             proc = subprocess.run(

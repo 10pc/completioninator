@@ -54,7 +54,7 @@ RUN pip install --no-cache-dir -e . \
     && mkdir -p /opt/danser/settings /opt/danser/videos \
     && cp ./danser/settings/pipeline.json /opt/danser/settings/pipeline.json \
     && useradd --create-home --uid 1000 app \
-    && mkdir -p /data/db /data/working /data/rendered /data/daily /data/beatmaps/songs \
+    && mkdir -p /data/db /data/working /data/rendered /data/daily /data/logs /data/beatmaps/songs \
     && chown -R app:app /app /data /opt/danser
 
 USER app

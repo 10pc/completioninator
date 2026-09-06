@@ -71,14 +71,26 @@ def _cmd_status(args, cfg) -> int:
         today = datetime.now(timezone.utc).date().isoformat()
         day = database.get_day_summary(conn, today)
         print(f"\nUTC day {today}:")
-        print(f"  total:   {day.get('total', 0)}")
-        print(f"  pending: {day.get('pending', 0)}")
+        print(f"  total:    {day.get('total', 0)}")
+        print(f"  pending:  {day.get('pending', 0)}")
+        print(f"  rendered: {day.get('rendered', 0)}")
+        print(f"  failed:   {day.get('failed', 0)}")
         print("\nRecent days:")
         for row in database.get_distinct_days(conn):
             print(f"  {row['day']}: {row['total']}")
     finally:
         conn.close()
     return 0
+
+
+def _free_gb(path: Path) -> float:
+    target = Path(path)
+    while not target.exists():
+        parent = target.parent
+        if parent == target:
+            return 0.0
+        target = parent
+    return shutil.disk_usage(target).free / 1e9
 
 
 def _cmd_render(args, cfg) -> int:
@@ -88,28 +100,36 @@ def _cmd_render(args, cfg) -> int:
         danser_home=cfg.danser_home,
         settings=cfg.danser_settings,
         timeout_seconds=cfg.render_timeout_seconds,
+        extra_args=cfg.danser_extra_args,
     )
     if not Path(renderer.cmd_prefix[0]).exists():
         print(f"danser not found: {renderer.cmd_prefix[0]} (PIPELINE_DANSER_HOME={cfg.danser_home})",
               file=sys.stderr)
         return 2
     cfg.working_dir.mkdir(parents=True, exist_ok=True)
+    cfg.logs_dir.mkdir(parents=True, exist_ok=True)
+    cfg.rendered_dir.mkdir(parents=True, exist_ok=True)
 
     database.init_db(db_path)
     conn = database.connect(db_path)
-    stats = {"rendered": 0, "failed": 0}
+    stats = {"rendered": 0, "failed": 0, "skipped_disk": 0}
     try:
         stale = database.reset_stale_rendering(conn)
         if stale:
             print(f"requeued {stale} stale rendering job(s)")
         for _ in range(limit):
+            free = _free_gb(cfg.rendered_dir)
+            if free < cfg.disk_min_free_gb:
+                print(f"disk guard: {free:.1f}GB free < {cfg.disk_min_free_gb}GB minimum; stopping run")
+                stats["skipped_disk"] += 1
+                break
             job = database.claim_pending(conn)
             if job is None:
                 break
             _render_one(conn, cfg, renderer, job, override_set_id=args.beatmapset_id, stats=stats)
     finally:
         conn.close()
-    print(f"rendered={stats['rendered']} failed={stats['failed']}")
+    print(f"rendered={stats['rendered']} failed={stats['failed']} skipped_disk={stats['skipped_disk']}")
     return 0
 
 
@@ -156,7 +176,16 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
         return
 
     result = renderer.render(scratch, tag)
-    print(result.log_text)
+    log_file = cfg.logs_dir / f"{tag}.log"
+    try:
+        log_file.write_text(result.log_text, encoding="utf-8", errors="replace")
+    except OSError as exc:
+        log.warning("could not write job log %s: %s", log_file, exc)
+    else:
+        print(f"[{tag}] log -> {log_file}")
+    # Console keeps only the tail; the full log lives in the file above.
+    tail = "\n".join(result.log_text.splitlines()[-8:])
+    print(tail)
     scratch.unlink(missing_ok=True)
     if not result.ok:
         database.mark_failed(conn, jid, (result.error or "render failed")[-500:])

@@ -19,10 +19,37 @@ Ubuntu render server (run by operator):
 ls /mnt/nas/osu-replays
 docker compose build
 docker compose run --rm pipeline discover
-docker compose run --rm pipeline render --limit 1
+docker compose run --rm pipeline render --limit 30
 docker compose run --rm pipeline status
 ls data/rendered/*/
 ```
+
+Steady state is a host cron job (single worker, ~1 min/map at 720p30):
+
+```bash
+# crontab -e — every 30 min, up to 25 renders per slot
+*/30 * * * * cd ~/completioninator && docker compose run --rm pipeline discover && docker compose run --rm pipeline render --limit 25
+```
+
+Each job writes its full danser log to `/data/logs/job-<id>.log` (console shows
+the tail only). Rendering refuses to start below `min_free_disk_gb` free space
+(default 5GB) so a full disk can't corrupt the queue.
+
+Optional: skip danser's per-job GitHub update check (saves ~4s/job and removes
+a network dependency). First verify the flag exists in this build:
+
+```bash
+docker compose run --rm --entrypoint sh pipeline -c '/opt/danser/danser-cli -h 2>&1 | grep -i update'
+```
+
+If `-noupdatecheck` is listed, enable it via `config.toml`:
+
+```toml
+[render]
+extra_args = ["-noupdatecheck"]
+```
+
+Never add `-nodbcheck` — danser must import newly downloaded maps every run.
 
 Beatmaps resolve through the hinamizawa.ai mirror by default — direct MD5
 lookup, no key, ranked + graveyard coverage. Downloaded `.osz` files are

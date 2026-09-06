@@ -13,6 +13,8 @@ import sys, os
 out = [a.split("=", 1)[1] for a in sys.argv if a.startswith("-out=")][0]
 fail = os.environ.get("STUB_DANSER_FAIL")
 os.makedirs("videos", exist_ok=True)
+with open("argv.txt", "w") as f:
+    f.write("\\n".join(sys.argv))
 if fail:
     sys.stderr.write("boom")
     sys.exit(1)
@@ -52,6 +54,16 @@ def test_render_failure(tmp_path: Path, monkeypatch):
     assert not res.ok and "exit 1" in (res.error or "")
     # failed stub must not leave an output behind
     assert not r.output_for("job-9").exists()
+
+
+def test_extra_args_reach_danser(tmp_path: Path):
+    home = tmp_path / "danser"
+    r = _stub_renderer(tmp_path, extra_args=("-noupdatecheck", "-skip"))
+    osr = tmp_path / "x.osr"
+    osr.write_bytes(b"fake")
+    assert r.render(osr, "job-args").ok
+    argv = (home / "argv.txt").read_text()
+    assert "-noupdatecheck" in argv and "-skip" in argv
 
 
 def test_verify_size_gate(tmp_path: Path):

@@ -3,6 +3,7 @@ replays = "/replays"
 database = "/data/db/pipeline.sqlite"
 working = "/data/working"
 rendered = "/data/rendered"
+logs = "/data/logs"
 
 [pipeline]
 timezone = "UTC"
@@ -11,9 +12,13 @@ min_age_seconds = 5
 [render]
 danser_home = "/opt/danser"
 settings = "pipeline"
-timeout_seconds = 600
+# extra danser-cli flags, e.g. ["-noupdatecheck"] once verified (see README).
+# WARNING: never add "-nodbcheck" — danser must import newly downloaded maps.
+extra_args = []
+timeout_seconds = 1800
 max_attempts = 3
 limit_default = 10
+min_free_disk_gb = 5.0
 
 [beatmaps]
 # backend: "hinamizawa" (default; direct md5 lookup, graveyard coverage, no key)
