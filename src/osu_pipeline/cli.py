@@ -151,7 +151,18 @@ def _cmd_render(args, cfg) -> int:
             job = database.claim_pending(conn)
             if job is None:
                 break
-            _render_one(conn, cfg, renderer, job, override_set_id=args.beatmapset_id, stats=stats)
+            try:
+                _render_one(conn, cfg, renderer, job, override_set_id=args.beatmapset_id, stats=stats)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one bad job must never kill the batch
+                log.exception("unexpected error on job-%s", job["id"])
+                try:
+                    database.mark_failed(conn, job["id"], f"unexpected: {exc}"[-500:])
+                    stats["failed"] += 1
+                except Exception:
+                    log.exception("could not record failure for job-%s", job["id"])
+                print(f"[job-{job['id']}] FAILED (unexpected): {exc}")
     except KeyboardInterrupt:
         print("\ninterrupted; current job returns to pending on the next run")
         return 130
@@ -171,15 +182,26 @@ def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result)
     both render claims and requeue.
     """
     if "Beatmap not found" in result.log_text and set_id:
-        if bhash and cfg.beatmap_backend == "hinamizawa":
+        if bhash:
             try:
-                current = beatmaps.set_checksums(cfg.beatmap_mirror, set_id)
+                on_disk = beatmaps.replay_hash_in_songs(cfg.songs_dir, set_id, bhash)
             except Exception:  # noqa: BLE001 - diagnosis must never fail the job
-                current = None
-            if current is not None and bhash.lower() not in current:
+                on_disk = None
+            if on_disk is False:
                 return ((f"danser: beatmap not found in set {set_id}; replay hash absent "
-                         f"from current set version (map updated since play and mirrors "
+                         f"from the downloaded .osz bytes (map updated since play; mirrors "
                          f"only host the latest version)"), True)
+            if on_disk is True:
+                return (f"danser: beatmap not found for set {set_id} though the hash is "
+                        f"on disk (dancer DB mismatch; retry may help)"), False
+            if cfg.beatmap_backend == "hinamizawa":
+                try:
+                    current = beatmaps.set_checksums(cfg.beatmap_mirror, set_id)
+                except Exception:  # noqa: BLE001
+                    current = None
+                if current is not None and bhash.lower() not in current:
+                    return ((f"danser: beatmap not found in set {set_id}; replay hash absent "
+                             f"from current set version (map likely updated since play)"), True)
         return f"danser: beatmap not found for set {set_id} (dancer DB mismatch; retry may help)", False
     return result.error or "render failed", False
 

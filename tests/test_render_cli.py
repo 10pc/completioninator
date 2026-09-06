@@ -178,6 +178,7 @@ def test_danser_beatmap_not_found_diagnosis(tmp_path: Path, monkeypatch):
     class Cfg:
         beatmap_mirror = "http://mirror"
         beatmap_backend = "hinamizawa"
+        songs_dir = tmp_path / "songs"
 
     bad = RenderResult(False, None, "stdout...\nBeatmap not found, closing...\n", error="exit 1")
     monkeypatch.setattr(beatmaps, "set_checksums", lambda *a, **k: {"otherhash"})
@@ -190,6 +191,67 @@ def test_danser_beatmap_not_found_diagnosis(tmp_path: Path, monkeypatch):
 
     ok = RenderResult(False, None, "some other log", error="boom")
     assert _diagnose_render_failure(Cfg(), "deadbeef", 1, ok) == ("boom", False)
+
+
+def test_diagnosis_prefers_byte_level_verdict(tmp_path: Path):
+    import hashlib
+
+    from osu_pipeline.cli import _diagnose_render_failure
+    from osu_pipeline.renderer import RenderResult
+
+    songs = tmp_path / "songs" / "99"
+    songs.mkdir(parents=True)
+    payload = b"current version bytes"
+    (songs / "map.osu").write_bytes(payload)
+
+    class Cfg:
+        beatmap_mirror = "http://mirror"
+        beatmap_backend = "hinamizawa"
+        songs_dir = tmp_path / "songs"
+
+    bad = RenderResult(False, None, "x\nBeatmap not found, closing...\n", error="exit 0")
+    # replay pins an older version: absent from disk bytes -> unrenderable
+    msg, unrend = _diagnose_render_failure(Cfg(), "0" * 32, 99, bad)
+    assert unrend is True and "downloaded .osz bytes" in msg
+    # replay matches disk bytes but danser missed it -> retryable
+    msg2, unrend2 = _diagnose_render_failure(Cfg(), hashlib.md5(payload).hexdigest(), 99, bad)
+    assert unrend2 is False and "retry may help" in msg2
+
+
+def test_unexpected_job_error_does_not_kill_batch(tmp_path: Path, monkeypatch, capsys):
+    db = tmp_path / "p.sqlite"
+    (tmp_path / "replays").mkdir()
+    ((tmp_path / "replays") / "a.osr").write_bytes(b"fake-replay")
+    ((tmp_path / "replays") / "b.osr").write_bytes(b"fake-replay")
+    _seed_row(db, path="a.osr", sha256="1")
+    _seed_row(db, path="b.osr", sha256="2")
+    cfg = _write_cfg(tmp_path)
+    stub = _stub_renderer(tmp_path)
+    import osu_pipeline.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: stub)
+    monkeypatch.setattr(
+        beatmaps, "ensure_beatmap", lambda *a, **k: (123, tmp_path / "songs" / "123.osz"))
+
+    real_render = stub.render
+    calls = {"n": 0}
+
+    def flaky(replay_osr, job_stem):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated bug")
+        return real_render(replay_osr, job_stem)
+
+    monkeypatch.setattr(stub, "render", flaky)
+    assert main(["--config", str(cfg), "render", "--limit", "5"]) == 0
+    out = capsys.readouterr().out
+    assert "unexpected" in out and "rendered=1" in out
+    conn = database.connect(db)
+    try:
+        counts = database.get_counts(conn)
+        assert counts["rendered"] == 1 and counts["failed"] == 1
+    finally:
+        conn.close()
 
 
 def test_updated_map_parked_unrenderable(tmp_path: Path, monkeypatch, capsys):

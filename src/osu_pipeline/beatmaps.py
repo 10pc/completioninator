@@ -163,6 +163,36 @@ def set_checksums(base: str, beatmapset_id: int, timeout: int = 30) -> set[str] 
     return out or None
 
 
+def replay_hash_in_songs(songs_dir: Path, beatmapset_id: int, beatmap_hash: str) -> bool | None:
+    """Byte-level check: does any unpacked .osu of this set match the replay hash?
+
+    Definitive where metadata lies (mirrors can serve bytes newer/older than
+    their metadata snapshot). Returns None when the set dir is absent so
+    callers fall back to the metadata check instead of concluding wrongly.
+    """
+    import hashlib
+
+    want = beatmap_hash.lower()
+    set_dir = Path(songs_dir) / str(beatmapset_id)
+    try:
+        osu_files = list(set_dir.rglob("*.osu"))
+    except OSError:
+        return None
+    if not osu_files:
+        return None
+    for osu_file in osu_files:
+        try:
+            h = hashlib.md5()
+            with open(osu_file, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            if h.hexdigest().lower() == want:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 # --- Tier 2: official osu! API (needs a free OAuth app; definitive) ---
 
 _token_cache: dict = {}

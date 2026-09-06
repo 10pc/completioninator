@@ -160,7 +160,6 @@ def test_ensure_beatmap_falls_back_to_official(mirror, tmp_path: Path):
 
 def test_requeue_failed(tmp_path: Path):
     from osu_pipeline import database
-
     db = tmp_path / "p.sqlite"
     database.init_db(db)
     conn = database.connect(db)
@@ -230,3 +229,18 @@ def test_503_download_is_transient(mirror, tmp_path: Path):
                                 fallback_mirror=mirror, fallback_backend="mino")
     assert ei.value.transient is True
     assert "503" in str(ei.value)
+
+
+def test_replay_hash_in_songs(tmp_path: Path):
+    import hashlib
+
+    songs = tmp_path / "songs"
+    set_dir = songs / "77"
+    set_dir.mkdir(parents=True)
+    payload = b"[Metadata]\nTitle:Test\n"
+    (set_dir / "a.osu").write_bytes(payload)
+    (set_dir / "b.osu").write_bytes(b"other content")
+    digest = hashlib.md5(payload).hexdigest()
+    assert beatmaps.replay_hash_in_songs(songs, 77, digest) is True
+    assert beatmaps.replay_hash_in_songs(songs, 77, "0" * 32) is False
+    assert beatmaps.replay_hash_in_songs(songs, 78, digest) is None  # no dir
