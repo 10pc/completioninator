@@ -39,6 +39,18 @@ class PipelineConfig:
     # official osu! API fallback for hash resolution (optional; free OAuth app)
     osu_client_id: str | None = None
     osu_client_secret: str | None = None
+    # video composition (Milestone 4)
+    video_width: int = 1920
+    video_height: int = 1080
+    video_fps: int = 30
+    header_height: int = 80
+    header_extra: str = ""
+    max_clips: int = 12
+    video_preset: str = "veryfast"
+    video_crf: int = 23
+    compose_timeout: int = 1800
+    fontfile: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    daily_dir: Path = Path("/data/daily")
 
     @property
     def resolved(self) -> "PipelineConfig":
@@ -84,6 +96,9 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     songs = os.environ.get("PIPELINE_SONGS_DIR")
     osu_client_id = os.environ.get("PIPELINE_OSU_CLIENT_ID")
     osu_client_secret = os.environ.get("PIPELINE_OSU_CLIENT_SECRET")
+    max_clips = os.environ.get("PIPELINE_MAX_CLIPS")
+    header_extra = os.environ.get("PIPELINE_HEADER_EXTRA")
+    daily_dir = os.environ.get("PIPELINE_DAILY_DIR")
     render_timeout = os.environ.get("PIPELINE_RENDER_TIMEOUT")
     render_max_attempts = os.environ.get("PIPELINE_RENDER_MAX_ATTEMPTS")
 
@@ -123,6 +138,18 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         osu = data.get("osu", {})
         osu_client_id = osu_client_id or osu.get("client_id")
         osu_client_secret = osu_client_secret or osu.get("client_secret")
+        video = data.get("video", {})
+        video_width = int(video.get("width", 1920))
+        video_height = int(video.get("height", 1080))
+        video_fps = int(video.get("fps", 30))
+        header_height = int(video.get("header_height", 80))
+        header_extra = header_extra if header_extra is not None else video.get("header_extra", "")
+        max_clips = int(max_clips or video.get("max_clips", 12))
+        video_preset = video.get("preset", "veryfast")
+        video_crf = int(video.get("crf", 23))
+        compose_timeout = int(video.get("compose_timeout", 1800))
+        fontfile = video.get("fontfile", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+        daily_dir = daily_dir or video.get("daily", paths.get("daily", "/data/daily"))
     else:
         render_timeout = int(render_timeout or 7200)
         danser_extra = tuple(a for a in (danser_extra or "").split(",") if a.strip())
@@ -133,6 +160,13 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
             fallback_mirror = None
         render_max_attempts = int(render_max_attempts or 3)
         limit_default = int(os.environ.get("PIPELINE_RENDER_LIMIT", "10"))
+        video_width, video_height, video_fps = 1920, 1080, 30
+        header_height = 80
+        header_extra = header_extra if header_extra is not None else ""
+        max_clips = int(max_clips or 12)
+        video_preset, video_crf, compose_timeout = "veryfast", 23, 1800
+        fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        daily_dir = daily_dir or "/data/daily"
 
     return PipelineConfig(
         replays_dir=Path(replays or "/replays"),
@@ -156,4 +190,15 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         songs_dir=Path(songs or "/data/beatmaps/songs"),
         osu_client_id=osu_client_id,
         osu_client_secret=osu_client_secret,
+        video_width=video_width,
+        video_height=video_height,
+        video_fps=video_fps,
+        header_height=header_height,
+        header_extra=header_extra,
+        max_clips=max_clips,
+        video_preset=video_preset,
+        video_crf=video_crf,
+        compose_timeout=compose_timeout,
+        fontfile=fontfile,
+        daily_dir=Path(daily_dir),
     )

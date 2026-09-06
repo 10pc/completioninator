@@ -39,6 +39,23 @@ docker compose run --rm pipeline progress 2026-03-29 # any day
 docker compose run --rm pipeline stop                # loop exits after its current job
 ```
 
+Compose the daily grid video (rolling batch: every rendered-but-uncomposited
+clip from any day; keeps the longest `max_clips`, default 12; the rest roll
+forward to the next batch):
+
+```bash
+docker compose run --rm pipeline compose
+docker compose run --rm pipeline compose --max-clips 15
+ls data/daily/
+```
+
+Fixed 1080p canvas; the grid starts full and shrinks as clips finish until
+the longest plays alone. Audio throughout is the longest clip's track.
+Header shows date + map count (`header_extra` in config appends future
+API-sourced data). Full danser-style per-job thinking doesn't apply here —
+`compose` prints per-segment progress; segments live under
+`data/working/compose-<date>/` until a successful join cleans them.
+
 `stop` drops a sentinel next to the database, so it reaches a running loop
 from any other container invocation; Ctrl+C works too (exit 130). The
 interrupted job returns to `pending` automatically on the next run — nothing

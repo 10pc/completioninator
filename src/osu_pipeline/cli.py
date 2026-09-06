@@ -1,15 +1,16 @@
-"""CLI: osu-pipeline discover / render / status."""
+"""CLI: osu-pipeline discover / render / compose / status."""
 
 from __future__ import annotations
 
 import argparse
 import logging
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import beatmaps, database
+from . import beatmaps, compositor, database
 from .config import load_config
 from .discovery import read_beatmap_hash, scan_replays
 from .renderer import DanserRenderer
@@ -45,6 +46,10 @@ def _build_parser() -> argparse.ArgumentParser:
     pg = sub.add_parser("progress", help="Batch overview for one UTC day")
     pg.add_argument("day", nargs="?", default=None, help="YYYY-MM-DD (default: today UTC)")
     pg.add_argument("--db", default=None, help="Override database path")
+
+    c = sub.add_parser("compose", help="Compose uncomposited renders into a shrinking-grid video")
+    c.add_argument("--max-clips", type=int, default=None, help="Keep longest N clips (default: config)")
+    c.add_argument("--db", default=None, help="Override database path")
     return p
 
 
@@ -76,6 +81,7 @@ def _cmd_status(args, cfg) -> int:
         print(f"  rendered:     {counts.get('rendered', 0)}")
         print(f"  failed:       {counts.get('failed', 0)}")
         print(f"  unrenderable: {counts.get('unrenderable', 0)}")
+        print(f"  composited:   {counts.get('composited', 0)}")
         today = datetime.now(timezone.utc).date().isoformat()
         day = database.get_day_summary(conn, today)
         print(f"\nUTC day {today}:")
@@ -86,6 +92,10 @@ def _cmd_status(args, cfg) -> int:
         print("\nRecent days:")
         for row in database.get_distinct_days(conn):
             print(f"  {row['day']}: {row['total']}")
+        latest = database.get_latest_daily(conn)
+        if latest:
+            print(f"\nLatest daily: {latest['path']} "
+                  f"({latest['clips']} clips, day {latest['day']})")
     finally:
         conn.close()
     return 0
@@ -340,6 +350,111 @@ def _cmd_progress(args, cfg) -> int:
     return 0
 
 
+def _cmd_compose(args, cfg) -> int:
+    """Rolling batch: all rendered-but-uncomposited clips -> shrinking-grid video."""
+    try:
+        ffmpeg, ffprobe = compositor.check_binaries()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    db_path = Path(args.db) if args.db else cfg.database_path
+    max_clips = args.max_clips or cfg.max_clips
+    today = datetime.now(timezone.utc).date().isoformat()
+    cfg.daily_dir.mkdir(parents=True, exist_ok=True)
+    workdir = cfg.working_dir / f"compose-{today}"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    try:
+        pending = database.get_counts(conn)["pending"]
+        if pending:
+            print(f"warning: {pending} replay(s) still pending render; composing without them")
+        rows = database.get_uncomposited(conn)
+    finally:
+        conn.close()
+    if not rows:
+        print("nothing to compose: no rendered-but-uncomposited clips")
+        return 0
+
+    # Probe; unreadable outputs are marked failed so triage sees them.
+    clips: list[compositor.Clip] = []
+    conn = database.connect(db_path)
+    try:
+        for row in rows:
+            src = Path(row["render_path"])
+            if not src.exists():
+                database.mark_failed(conn, row["id"], f"render output missing: {src}")
+                print(f"[job-{row['id']}] render output missing, marked failed")
+                continue
+            clip = compositor.probe_clip(ffprobe, src)
+            if clip is None:
+                database.mark_failed(conn, row["id"], f"unreadable render output: {src}")
+                print(f"[job-{row['id']}] unreadable output, marked failed")
+                continue
+            clip.id, clip.day = row["id"], row["day"]
+            clips.append(clip)
+    finally:
+        conn.close()
+    if not clips:
+        print("nothing composable: all candidates failed probing")
+        return 1
+
+    clips.sort(key=lambda c: c.duration, reverse=True)
+    kept, rolled = clips[:max_clips], clips[max_clips:]
+    days = sorted({c.day for c in kept if c.day})
+    span = f"{days[0]}..{days[-1]}" if len(days) > 1 else (days[0] if days else None)
+    print(f"batch: {len(kept)} clips ({sum(c.duration for c in kept):.0f}s content), "
+          f"{len(rolled)} roll forward to next batch")
+
+    out_path = cfg.daily_dir / f"day-{today}.mp4"
+    suffix = 2
+    while out_path.exists():
+        out_path = cfg.daily_dir / f"day-{today}-{suffix}.mp4"
+        suffix += 1
+
+    header = compositor.header_text(today, len(kept), span, cfg.header_extra)
+    segments = compositor.plan_segments(kept)
+    print(f"encoding {len(segments)} segments -> {out_path}")
+    seg_paths = []
+    try:
+        for i, seg in enumerate(segments):
+            seg_path = workdir / f"seg-{i:03d}.mp4"
+            graph = workdir / f"seg-{i:03d}.txt"
+            li = compositor.longest_index(seg.active)
+            script, audio = compositor.build_segment_graph(
+                seg, li, cfg.video_width, cfg.video_height - cfg.header_height,
+                cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36)
+            graph.write_text(script)
+            seg_timeout = max(600, int(seg.length * 10) + 120)
+            compositor.encode_segment(ffmpeg, seg, graph, audio, seg_path,
+                                      cfg.video_fps, cfg.video_preset, cfg.video_crf,
+                                      min(seg_timeout, cfg.compose_timeout))
+            seg_paths.append(seg_path)
+        compositor.concat_segments(ffmpeg, seg_paths, out_path)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f"compose FAILED: {exc} (segments kept under {workdir})", file=sys.stderr)
+        return 1
+
+    final = compositor.probe_clip(ffprobe, out_path)
+    total = sum(c.duration for c in kept)
+    print(f"composed {out_path} ({final.duration:.0f}s)" if final else f"composed {out_path}")
+    for p in seg_paths:
+        p.unlink(missing_ok=True)
+    for p in workdir.glob("seg-*.txt"):
+        p.unlink(missing_ok=True)
+    (workdir / "concat.txt").unlink(missing_ok=True)
+
+    conn = database.connect(db_path)
+    try:
+        database.mark_composited(conn, [c.id for c in kept])
+        database.record_daily(conn, today, out_path.as_posix(), len(kept),
+                              final.duration if final else total, span)
+    finally:
+        conn.close()
+    return 0
+
+
 def main(argv: list | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -364,6 +479,8 @@ def main(argv: list | None = None) -> int:
         return _cmd_stop(args, cfg)
     if args.command == "progress":
         return _cmd_progress(args, cfg)
+    if args.command == "compose":
+        return _cmd_compose(args, cfg)
     parser.print_help()
     return 2
 

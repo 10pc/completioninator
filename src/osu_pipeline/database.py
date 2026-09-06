@@ -25,6 +25,14 @@ CREATE TABLE IF NOT EXISTS replays (
 );
 CREATE INDEX IF NOT EXISTS idx_replays_status_day ON replays(status, day);
 CREATE INDEX IF NOT EXISTS idx_replays_day ON replays(day);
+CREATE TABLE IF NOT EXISTS daily (
+    day TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    clips INTEGER NOT NULL,
+    seconds REAL,
+    span TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 # Milestone 2 columns; applied idempotently to M1 databases.
@@ -103,7 +111,7 @@ def get_counts(conn: sqlite3.Connection) -> dict:
     counts = {r["status"]: r["n"] for r in rows}
     total = conn.execute("SELECT COUNT(*) AS n FROM replays").fetchone()["n"]
     counts["discovered"] = total
-    for s in ("pending", "rendering", "rendered", "failed", "unrenderable"):
+    for s in ("pending", "rendering", "rendered", "failed", "unrenderable", "composited"):
         counts.setdefault(s, 0)
     return counts
 
@@ -209,3 +217,40 @@ def mark_unrenderable(conn: sqlite3.Connection, replay_id: int, error: str) -> N
         (error, replay_id),
     )
     conn.commit()
+
+
+# --- Daily batches (Milestone 4) ---
+
+def get_uncomposited(conn: sqlite3.Connection) -> list:
+    """Rendered clips not yet in any daily video, oldest day first (rolling batch)."""
+    rows = conn.execute(
+        "SELECT id, path, day, render_path FROM replays "
+        "WHERE status = 'rendered' AND render_path IS NOT NULL ORDER BY day, id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_composited(conn: sqlite3.Connection, replay_ids: list[int]) -> None:
+    if not replay_ids:
+        return
+    placeholders = ",".join("?" for _ in replay_ids)
+    conn.execute(
+        f"UPDATE replays SET status = 'composited' WHERE id IN ({placeholders})", replay_ids
+    )
+    conn.commit()
+
+
+def record_daily(conn: sqlite3.Connection, day: str, path: str, clips: int,
+                 seconds: float | None, span: str | None) -> None:
+    conn.execute(
+        "INSERT INTO daily (day, path, clips, seconds, span, created_at) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(day) DO UPDATE SET path=excluded.path, clips=excluded.clips, "
+        "seconds=excluded.seconds, span=excluded.span, created_at=excluded.created_at",
+        (day, path, clips, seconds, span, _utcnow_iso()),
+    )
+    conn.commit()
+
+
+def get_latest_daily(conn: sqlite3.Connection) -> dict | None:
+    row = conn.execute("SELECT * FROM daily ORDER BY day DESC LIMIT 1").fetchone()
+    return dict(row) if row else None
