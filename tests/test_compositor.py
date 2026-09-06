@@ -61,6 +61,7 @@ def test_segment_graph_references_longest_audio():
     graph, audio = compositor.build_segment_graph(
         seg, li, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
     assert "xstack=inputs=2:layout=" in graph
+    assert ":fill=black" in graph
     assert "[0:a]aresample=48000" in graph  # longest clip's audio
     assert audio == "[aout]"
     assert "drawtext=" in graph and "HDR" in graph

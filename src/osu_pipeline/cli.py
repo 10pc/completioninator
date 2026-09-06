@@ -433,7 +433,10 @@ def _cmd_compose(args, cfg) -> int:
             seg_paths.append(seg_path)
         compositor.concat_segments(ffmpeg, seg_paths, out_path)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        print(f"compose FAILED: {exc} (segments kept under {workdir})", file=sys.stderr)
+        detail = ""
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            detail = "\n".join(str(exc.stderr).splitlines()[-15:])
+        print(f"compose FAILED: {exc}\n{detail} (segments kept under {workdir})", file=sys.stderr)
         return 1
 
     final = compositor.probe_clip(ffprobe, out_path)

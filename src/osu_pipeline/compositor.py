@@ -147,7 +147,7 @@ def build_segment_graph(seg: Segment, longest_idx: int, width: int, grid_h: int,
     labels = "".join(f"[v{i}]" for i in range(k))
     layout = layout_string(cols, rows, k, tw, th, header_h)
     chains.append(
-        f"{labels}xstack=inputs={k}:layout={layout}:fillcolor=black[vgrid]")
+        f"{labels}xstack=inputs={k}:layout={layout}:fill=black[vgrid]")
     chains.append(f"[vgrid]{drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)}[vout]")
     audio = ""
     order = [longest_idx] + [i for i in range(k) if i != longest_idx]
