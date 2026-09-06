@@ -417,21 +417,30 @@ def _cmd_compose(args, cfg) -> int:
     segments = compositor.plan_segments(kept)
     print(f"encoding {len(segments)} segments -> {out_path}")
     seg_paths = []
+    video_tmp = workdir / "video.mp4"
+    audio_tmp = workdir / "audio.m4a"
     try:
         for i, seg in enumerate(segments):
             seg_path = workdir / f"seg-{i:03d}.mp4"
             graph = workdir / f"seg-{i:03d}.txt"
-            li = compositor.longest_index(seg.active)
-            script, audio = compositor.build_segment_graph(
-                seg, li, cfg.video_width, cfg.video_height - cfg.header_height,
-                cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36)
-            graph.write_text(script)
+            graph.write_text(compositor.build_segment_graph(
+                seg, cfg.video_width, cfg.video_height - cfg.header_height,
+                cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36))
             seg_timeout = max(600, int(seg.length * 10) + 120)
-            compositor.encode_segment(ffmpeg, seg, graph, audio, seg_path,
+            compositor.encode_segment(ffmpeg, seg, graph, seg_path,
                                       cfg.video_fps, cfg.video_preset, cfg.video_crf,
                                       min(seg_timeout, cfg.compose_timeout))
             seg_paths.append(seg_path)
-        compositor.concat_segments(ffmpeg, seg_paths, out_path, workdir)
+        compositor.concat_segments(ffmpeg, seg_paths, video_tmp, workdir)
+        audio_script, has_audio = compositor.build_audio_graph(kept)
+        if has_audio:
+            (workdir / "audio.txt").write_text(audio_script)
+            total_len = sum(c.duration for c in kept)
+            compositor.encode_audio_mix(ffmpeg, kept, workdir / "audio.txt", audio_tmp,
+                                        min(max(300, int(total_len)), cfg.compose_timeout))
+            compositor.mux_audio_video(ffmpeg, video_tmp, audio_tmp, out_path)
+        else:
+            compositor.mux_audio_video(ffmpeg, video_tmp, None, out_path)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         detail = ""
         if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
@@ -447,6 +456,9 @@ def _cmd_compose(args, cfg) -> int:
     for p in workdir.glob("seg-*.txt"):
         p.unlink(missing_ok=True)
     (workdir / "concat.txt").unlink(missing_ok=True)
+    (workdir / "audio.txt").unlink(missing_ok=True)
+    video_tmp.unlink(missing_ok=True)
+    audio_tmp.unlink(missing_ok=True)
     conn = database.connect(db_path)
     try:
         database.mark_composited(conn, [c.id for c in kept])

@@ -120,13 +120,16 @@ def layout_string(cols: int, rows: int, k: int, tw: int, th: int, y0: int) -> st
     return "|".join(parts)
 
 
-def header_text(date: str, total: int, span: str | None, extra: str = "") -> str:
-    text = f"OSU! COMPLETIONIST -- {date} -- {total} MAPS"
-    if span:
-        text += f" -- {span}"
+def header_text(date: str, total: int, span: str | None = None, extra: str = "") -> str:
+    """Exact format: `dd-mm-yyyy | x maps` (span/extra kept out by default)."""
+    try:
+        y, m, d = date.split("-")
+        head = f"{d}-{m}-{y} | {total} maps"
+    except ValueError:
+        head = f"{date} | {total} maps"
     if extra:
-        text += f" -- {extra}"
-    return text
+        head += f" | {extra}"
+    return head
 
 
 def drawtext_filter(text: str, fontfile: str, fontsize: int, y: int,
@@ -136,58 +139,94 @@ def drawtext_filter(text: str, fontfile: str, fontsize: int, y: int,
             f"fontcolor={fontcolor}:x=(w-text_w)/2:y={y}")
 
 
-def build_segment_graph(seg: Segment, longest_idx: int, width: int, grid_h: int,
+def build_segment_graph(seg: Segment, width: int, grid_h: int,
                          header_h: int, fps: int, header: str, fontfile: str,
-                         fontsize: int) -> tuple[str, str]:
-    """Return (filter_complex_script, audio_label_or_empty) for one segment."""
+                         fontsize: int, fade_s: float = 0.3) -> str:
+    """Video-only graph for one segment. Returns the filter_complex script.
+
+    Tiles keep source aspect (letterboxed); a short fade in/out softens each
+    grid resize. Audio is built separately as one continuous mix (see below),
+    so segment joins never glitch it.
+    """
     k = len(seg.active)
     cols, rows = grid_dims(k)
     tw, th = tile_size(cols, rows, width, grid_h)
     chains = []
     if k == 1:
         # xstack needs >= 2 inputs; a lone survivor just fills the grid area.
-        chains.append(f"[0:v]scale={width}:{grid_h},setsar=1,fps={fps},setpts=PTS-STARTPTS[vgrid]")
+        chains.append(f"[0:v]scale={width}:{grid_h}:force_original_aspect_ratio=decrease,"
+                      f"pad={width}:{grid_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                      f"fps={fps},setpts=PTS-STARTPTS[vgrid]")
     else:
         for i in range(k):
             chains.append(
-                f"[{i}:v]scale={tw}:{th},setsar=1,fps={fps},setpts=PTS-STARTPTS[v{i}]")
+                f"[{i}:v]scale={tw}:{th}:force_original_aspect_ratio=decrease,"
+                f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                f"fps={fps},setpts=PTS-STARTPTS[v{i}]")
         labels = "".join(f"[v{i}]" for i in range(k))
         layout = layout_string(cols, rows, k, tw, th, header_h)
         chains.append(
             f"{labels}xstack=inputs={k}:layout={layout}:fill=black[vgrid]")
     chains.append(f"[vgrid]{drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)}[vhead]")
-    chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vout]")
-    audio = ""
-    order = [longest_idx] + [i for i in range(k) if i != longest_idx]
-    for i in order:
-        if seg.active[i].has_audio:
-            chains.append(f"[{i}:a]aresample=48000,asetpts=PTS-STARTPTS[aout]")
-            audio = "[aout]"
-            break
-    return ";\n".join(chains) + "\n", audio
+    chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vpad]")
+    d = min(fade_s, seg.length / 2) if seg.length > 0 else 0.0
+    chains.append(f"[vpad]fade=t=in:st=0:d={d:.3f},fade=t=out:st={max(0.0, seg.length - d):.3f}:d={d:.3f}[vout]")
+    return ";\n".join(chains) + "\n"
 
 
-def longest_index(active: list[Clip]) -> int:
-    return max(range(len(active)), key=lambda i: active[i].duration)
+def build_audio_graph(clips: list[Clip]) -> tuple[str, bool]:
+    """One continuous mix of every clip that has audio (full timeline, no seeks).
+
+    Finished clips fall silent as their inputs end, so the mix naturally
+    thins out exactly like the grid. Returns (script, has_any_audio).
+    """
+    voiced = [c for c in clips if c.has_audio]
+    if not voiced:
+        return "", False
+    chains = []
+    for i in range(len(voiced)):
+        chains.append(f"[{i}:a]aresample=48000,asetpts=PTS-STARTPTS[a{i}]")
+    if len(voiced) == 1:
+        chains.append("[a0]anull[aout]")
+    else:
+        labels = "".join(f"[a{i}]" for i in range(len(voiced)))
+        chains.append(f"{labels}amix=inputs={len(voiced)}:duration=longest:normalize=1[aout]")
+    return ";\n".join(chains) + "\n", True
 
 
-def encode_segment(ffmpeg: str, seg: Segment, graph_file: Path, audio_label: str,
+def encode_audio_mix(ffmpeg: str, clips: list[Clip], graph_file: Path,
+                     out_path: Path, timeout: int) -> None:
+    voiced = [c for c in clips if c.has_audio]
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+    for c in voiced:
+        cmd += ["-i", str(c.path)]
+    cmd += ["-filter_complex_script", str(graph_file),
+            "-map", "[aout]", "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+            str(out_path)]
+    log.info("encoding full-timeline audio mix (%d tracks)", len(voiced))
+    subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+
+
+def mux_audio_video(ffmpeg: str, video_path: Path, audio_path: Path | None,
+                    out_path: Path, timeout: int = 600) -> None:
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(video_path)]
+    if audio_path is not None:
+        cmd += ["-i", str(audio_path), "-map", "0:v", "-map", "1:a"]
+    cmd += ["-c", "copy", "-shortest", "-movflags", "+faststart", str(out_path)]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+
+
+def encode_segment(ffmpeg: str, seg: Segment, graph_file: Path,
                    out_path: Path, fps: int, preset: str, crf: int, timeout: int) -> None:
     cmd = ["ffmpeg", "-y", "-v", "error"]
     for c in seg.active:
         cmd += ["-ss", f"{seg.start:.3f}", "-i", str(c.path)]
     cmd += ["-filter_complex_script", str(graph_file),
             "-map", "[vout]"]
-    if audio_label:
-        cmd += ["-map", audio_label]
     cmd += ["-t", f"{seg.length:.3f}",
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-            "-pix_fmt", "yuv420p", "-r", str(fps)]
-    if audio_label:
-        cmd += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
-    else:
-        cmd += ["-an"]
-    cmd += [str(out_path)]
+            "-pix_fmt", "yuv420p", "-r", str(fps),
+            "-an", str(out_path)]
     log.info("encoding segment %.1fs-%.1fs (%d clips)", seg.start, seg.end, len(seg.active))
     subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
 

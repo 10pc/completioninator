@@ -46,16 +46,22 @@ def test_compose_happy_path(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setattr(
         compositor, "probe_clip",
         lambda ffprobe, src: compositor.Clip(
-            id=-1, path=src, day=None, duration=DURATIONS[src.name], has_audio=True))
+            id=-1, path=Path(src), day=None, duration=DURATIONS[src.name], has_audio=True))
 
-    def _encode(ffmpeg, seg, graph, audio, out_path, *a):
+    def _encode(ffmpeg, seg, graph, out_path, *a):
         Path(graph).write_text("graph")
         Path(out_path).write_bytes(b"seg")
 
     monkeypatch.setattr(compositor, "encode_segment", _encode)
     monkeypatch.setattr(
         compositor, "concat_segments",
-        lambda ffmpeg, segs, out_path, timeout=600: Path(out_path).write_bytes(b"joined"))
+        lambda ffmpeg, segs, out_path, workdir, timeout=600: Path(out_path).write_bytes(b"joined"))
+    monkeypatch.setattr(
+        compositor, "encode_audio_mix",
+        lambda ffmpeg, clips, graph, out_path, timeout: Path(out_path).write_bytes(b"mix"))
+    monkeypatch.setattr(
+        compositor, "mux_audio_video",
+        lambda ffmpeg, video, audio, out_path, timeout=600: Path(out_path).write_bytes(b"final"))
     # final verification probe
     calls = {"n": 0}
 
@@ -126,10 +132,18 @@ def test_compose_keeps_longest_max_clips(tmp_path: Path, monkeypatch, capsys):
             duration=durs.get(Path(src).name, 90.0), has_audio=False))
     monkeypatch.setattr(
         compositor, "encode_segment",
-        lambda *a, **k: Path(a[4]).write_bytes(b"seg"))
+        lambda ffmpeg, seg, graph, out_path, *a: Path(out_path).write_bytes(b"seg"))
     monkeypatch.setattr(
         compositor, "concat_segments",
-        lambda *a, **k: Path(a[2]).write_bytes(b"joined"))
+        lambda ffmpeg, segs, out_path, workdir, timeout=600: Path(out_path).write_bytes(b"joined"))
+    monkeypatch.setattr(
+        compositor, "encode_audio_mix",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no audio expected")))
+    def _mux(ffmpeg, video, audio, out_path, timeout=600):
+        assert audio is None  # this test's clips have no audio
+        Path(out_path).write_bytes(b"final")
+
+    monkeypatch.setattr(compositor, "mux_audio_video", _mux)
     assert main(["--config", str(cfg), "compose"]) == 0
     rolled_out = capsys.readouterr().out
     assert "batch: 2 clips" in rolled_out

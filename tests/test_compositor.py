@@ -54,32 +54,48 @@ def test_plan_segments_equal_durations():
 
 
 def test_header_text():
-    assert compositor.header_text("2026-09-06", 12, None) == \
-        "OSU! COMPLETIONIST -- 2026-09-06 -- 12 MAPS"
-    assert "2026-08-22..2026-09-04" in \
-        compositor.header_text("2026-09-06", 12, "2026-08-22..2026-09-04", extra="crest 5.1")
-    assert "crest" in compositor.header_text("2026-09-06", 1, None, extra="crest 5.1")
+    assert compositor.header_text("2026-09-06", 12, None) == "06-09-2026 | 12 maps"
+    assert compositor.header_text("2026-09-06", 12, "2026-08-22..2026-09-04") == \
+        "06-09-2026 | 12 maps"
+    assert compositor.header_text("2026-09-06", 1, None, extra="crest 5.1") == \
+        "06-09-2026 | 1 maps | crest 5.1"
 
 
-def test_segment_graph_references_longest_audio():
+def test_segment_graph_video_only_aspect_fade():
     clips = [_clip(1, 100.0), _clip(2, 60.0, day="2026-09-05")]
     seg = compositor.Segment(start=0.0, end=60.0, active=clips)
-    li = compositor.longest_index(seg.active)
-    assert li == 0
-    graph, audio = compositor.build_segment_graph(
-        seg, li, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
+    graph = compositor.build_segment_graph(
+        seg, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
     assert "xstack=inputs=2:layout=" in graph
     assert ":fill=black" in graph
-    assert "[0:a]aresample=48000" in graph  # longest clip's audio
-    assert audio == "[aout]"
+    assert "force_original_aspect_ratio=decrease" in graph
+    assert "fade=t=in:st=0" in graph and "fade=t=out" in graph
+    assert "aresample" not in graph and "[aout]" not in graph
     assert "drawtext=" in graph and "HDR" in graph
-    assert "pad=1920:1080:0:0:black[vout]" in graph
+    assert "pad=1920:1080:0:0:black[vpad]" in graph
+
+
+def test_audio_graph_stacks_all_voiced():
+    clips = [_clip(1, 100.0), _clip(2, 60.0)]
+    script, ok = compositor.build_audio_graph(clips)
+    assert ok is True
+    assert "amix=inputs=2" in script
+    assert "[0:a]" in script and "[1:a]" in script
+
+
+def test_audio_graph_single_and_none():
+    script, ok = compositor.build_audio_graph([_clip(1, 100.0)])
+    assert ok is True and "[aout]" in script and "amix" not in script
+    mute = [_clip(1, 10.0), _clip(2, 20.0)]
+    for c in mute:
+        c.has_audio = False
+    assert compositor.build_audio_graph(mute) == ("", False)
 
 
 def test_single_clip_skips_xstack():
     seg = compositor.Segment(start=0.0, end=60.0, active=[_clip(1, 60.0)])
-    graph, audio = compositor.build_segment_graph(
-        seg, 0, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
+    graph = compositor.build_segment_graph(
+        seg, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
     assert "xstack" not in graph
     assert "[0:v]scale=1920:1000" in graph
-    assert audio == "[aout]"
+    assert "fade=t=in" in graph
