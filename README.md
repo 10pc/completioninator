@@ -50,10 +50,13 @@ ls data/daily/
 ```
 
 Fixed 1080p canvas; the grid starts full and shrinks as clips finish until
-the longest plays alone. Tiles keep source aspect (letterboxed); each resize
-is softened with a short fade. Audio is one continuous mix of all playing
-clips (built separately, so segment joins never glitch it). Header reads
-`dd-mm-yyyy | X maps` (`header_extra` appends future API-sourced data).
+the longest plays alone. Every tile is exactly 16:9 like the sources, so
+plain scaling stays aspect-exact with no letterbox bars — including
+mid-morph, since lerps between 16:9 boxes can't distort. Grids are centered,
+ragged rows included. Resizes animate as 1s glides (dying tiles shrink out);
+audio is one continuous mix of all playing clips, so segment joins never
+glitch it. Header reads `dd-mm-yyyy | X maps` (`header_extra` appends future
+API-sourced data).
 
 `stop` drops a sentinel next to the database, so it reaches a running loop
 from any other container invocation; Ctrl+C works too (exit 130). The
