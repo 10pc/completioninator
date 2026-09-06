@@ -105,6 +105,48 @@ def test_claim_reset_mark_cycle(tmp_path: Path):
         conn.close()
 
 
+def test_concurrent_claims_never_double_assign(tmp_path: Path):
+    import threading
+
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    try:
+        for i in range(30):
+            database.insert_replay(
+                conn, path=f"{i}.osr", sha256=f"s{i}", size=4, mtime_ns=1,
+                played_at="2026-09-06T00:00:00+00:00", day="2026-09-06",
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    claimed: list = []
+    lock = threading.Lock()
+
+    def worker():
+        mine = database.connect(db)  # one connection per thread
+        try:
+            while True:
+                job = database.claim_pending(mine)
+                if job is None:
+                    return
+                with lock:
+                    claimed.append(job["id"])
+        finally:
+            mine.close()
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=120)
+        assert not t.is_alive()
+
+    assert len(claimed) == 30
+    assert len(set(claimed)) == 30  # no job rendered twice
+
+
 def test_migration_adds_m2_columns(tmp_path: Path):
     db = tmp_path / "old.sqlite"
     conn = sqlite3.connect(str(db))  # simulate an M1 database (full M1 schema, no M2 cols)

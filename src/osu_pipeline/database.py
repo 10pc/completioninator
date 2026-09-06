@@ -41,6 +41,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=10000;")  # concurrent workers wait instead of SQLITE_BUSY
     return conn
 
 
