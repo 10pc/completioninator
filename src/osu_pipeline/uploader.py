@@ -42,11 +42,12 @@ def _client_config(client_id: str, client_secret: str) -> dict:
 
 
 def run_auth_flow(client_id: str, client_secret: str, token_path: Path,
-                   port: int = 8080, host: str = "0.0.0.0"):
+                   port: int = 8080, host: str = "localhost"):
     """One-time browser authorization. Run with the port published on VNC box.
 
-    Binds all interfaces by default: inside Docker, `localhost` can resolve
-    to ::1 and the callback becomes unreachable over IPv4. Exposure stays
+    The callback server binds all interfaces (bind_addr) while the redirect
+    URI stays on `host`: inside Docker, `localhost` can resolve to ::1 and a
+    0.0.0.0 redirect is not routable, so the two must differ. Exposure stays
     loopback-only via `-p 127.0.0.1:PORT:PORT` on the run command.
     Prints the consent URL as well (for browsers that don't auto-open).
     Saves refresh-capable credentials to token_path.
@@ -54,7 +55,8 @@ def run_auth_flow(client_id: str, client_secret: str, token_path: Path,
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     flow = InstalledAppFlow.from_client_config(_client_config(client_id, client_secret), SCOPES)
-    creds = flow.run_local_server(host=host, port=port, open_browser=False)
+    creds = flow.run_local_server(host=host, bind_addr="0.0.0.0", port=port,
+                                  open_browser=False)
     token_path = Path(token_path)
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(creds.to_json())

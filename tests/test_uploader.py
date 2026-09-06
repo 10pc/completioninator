@@ -224,6 +224,7 @@ def test_auth_flow_binds_configured_host(tmp_path: Path, monkeypatch):
             return _Creds()
 
     monkeypatch.setattr(flow_mod, "InstalledAppFlow", _FakeFlow)
-    uploader.run_auth_flow("cid", "sec", tmp_path / "tok.json", port=8091, host="0.0.0.0")
-    assert seen["host"] == "0.0.0.0" and seen["port"] == 8091
+    uploader.run_auth_flow("cid", "sec", tmp_path / "tok.json", port=8091, host="localhost")
+    assert seen["host"] == "localhost" and seen["port"] == 8091
+    assert seen["bind_addr"] == "0.0.0.0"
     assert (tmp_path / "tok.json").exists()

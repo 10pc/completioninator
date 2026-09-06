@@ -59,7 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     au = sub.add_parser("auth-youtube", help="One-time browser authorization for uploads")
     au.add_argument("--port", type=int, default=8080, help="Local callback port (publish it)")
-    au.add_argument("--host", default="0.0.0.0", help="Callback bind address (see uploader docs)")
+    au.add_argument("--host", default="localhost", help="Redirect hostname (server binds all interfaces)")
     au.add_argument("--db", default=None, help="Override database path")
 
     up = sub.add_parser("upload", help="Upload a daily video")
