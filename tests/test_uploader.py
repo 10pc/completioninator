@@ -201,3 +201,29 @@ def test_cli_upload_missing_pieces(tmp_path: Path, monkeypatch, capsys):
     conn.close()
     assert main(["--config", str(cfg), "upload", "2026-09-06"]) == 2
     assert "client ID" in capsys.readouterr().err
+
+
+def test_auth_flow_binds_configured_host(tmp_path: Path, monkeypatch):
+    import google_auth_oauthlib.flow as flow_mod
+
+    seen = {}
+
+    class _FakeFlow:
+        @classmethod
+        def from_client_config(cls, config, scopes):
+            assert config["installed"]["client_id"] == "cid"
+            return cls()
+
+        def run_local_server(self, **kwargs):
+            seen.update(kwargs)
+
+            class _Creds:
+                def to_json(self):
+                    return "{}"
+
+            return _Creds()
+
+    monkeypatch.setattr(flow_mod, "InstalledAppFlow", _FakeFlow)
+    uploader.run_auth_flow("cid", "sec", tmp_path / "tok.json", port=8091, host="0.0.0.0")
+    assert seen["host"] == "0.0.0.0" and seen["port"] == 8091
+    assert (tmp_path / "tok.json").exists()
