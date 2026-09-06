@@ -209,3 +209,25 @@ def test_renderer_applies_skin_on_init(tmp_path: Path):
     DanserRenderer(danser_home=home, cmd_prefix=[sys.executable, "stub"], skin="Custom")
     data = json.loads((home / "settings" / "pipeline.json").read_text())
     assert data["Skin"]["CurrentSkin"] == "Custom"
+
+
+def test_repo_pipeline_look():
+    from osu_pipeline.config import load_config
+
+    repo = Path(__file__).resolve().parents[1]
+    data = json.loads((repo / "danser" / "settings" / "pipeline.json").read_text())
+    assert data["Skin"]["CurrentSkin"] == "abnormal"
+    assert data["Skin"]["Cursor"]["UseSkinCursor"] is True
+    gameplay = data["Gameplay"]
+    for key in ("Score", "HpBar", "ComboCounter", "HitErrorMeter", "KeyOverlay", "Mods"):
+        assert gameplay[key]["Show"] is True, key
+    assert gameplay["HitErrorMeter"]["ShowUnstableRate"] is True
+    for key in ("PPCounter", "HitCounter", "AimErrorMeter", "StrainGraph", "ScoreBoard"):
+        assert gameplay[key]["Show"] is False, key
+    bg = data["Playfield"]["Background"]
+    assert bg["LoadStoryboards"] is True and bg["Dim"]["Normal"] == 0.7
+    assert bg["Parallax"]["Enabled"] is False
+    assert data["Playfield"]["Logo"]["Enabled"] is False
+    assert data["Playfield"]["SeizureWarning"]["Enabled"] is False
+    cfg = load_config(repo / "config" / "config.toml")
+    assert cfg.danser_skin == "abnormal"

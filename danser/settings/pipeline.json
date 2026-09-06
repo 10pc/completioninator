@@ -5,10 +5,41 @@
     "UnpackOszFiles": true
   },
   "Skin": {
-    "CurrentSkin": "default",
+    "CurrentSkin": "abnormal",
     "FallbackSkin": "default",
     "UseColorsFromSkin": false,
-    "UseBeatmapColors": false
+    "UseBeatmapColors": false,
+    "Cursor": {
+      "UseSkinCursor": true,
+      "Scale": 1.0,
+      "TrailScale": 1.0
+    }
+  },
+  "Gameplay": {
+    "Score": {"Show": true, "Scale": 1.0, "Opacity": 1.0},
+    "HpBar": {"Show": true, "Scale": 1.0, "Opacity": 1.0},
+    "ComboCounter": {"Show": true, "Scale": 1.0, "Opacity": 1.0},
+    "HitErrorMeter": {
+      "Show": true, "Scale": 1.0, "Opacity": 1.0,
+      "ShowUnstableRate": true
+    },
+    "KeyOverlay": {"Show": true, "Scale": 1.0, "Opacity": 1.0},
+    "Mods": {"Show": true, "Scale": 1.0, "Opacity": 1.0},
+    "PPCounter": {"Show": false},
+    "HitCounter": {"Show": false},
+    "AimErrorMeter": {"Show": false},
+    "StrainGraph": {"Show": false},
+    "ScoreBoard": {"Show": false}
+  },
+  "Playfield": {
+    "SeizureWarning": {"Enabled": false},
+    "Logo": {"Enabled": false},
+    "Background": {
+      "LoadStoryboards": true,
+      "LoadVideos": false,
+      "Dim": {"Intro": 0, "Normal": 0.7, "Breaks": 0.5},
+      "Parallax": {"Enabled": false}
+    }
   },
   "Recording": {
     "FrameWidth": 1280,
