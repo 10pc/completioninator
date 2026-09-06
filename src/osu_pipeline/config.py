@@ -66,6 +66,7 @@ class PipelineConfig:
     youtube_privacy: str = "unlisted"
     youtube_category_id: str = "20"
     youtube_title_template: str = "OSU! Completionist — {day} ({clips} maps)"
+    prune_after_upload: bool = True
     # instagram (Milestone 7; token via env ONLY)
     instagram_user_id: str | None = None
     instagram_token: str | None = None
@@ -202,6 +203,11 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_category_id = youtube.get("category_id", "20")
         youtube_title_template = youtube.get(
             "title_template", "OSU! Completionist — {day} ({clips} maps)")
+        _prune_raw = os.environ.get("PIPELINE_PRUNE_AFTER_UPLOAD")
+        if _prune_raw is None:
+            prune_after_upload = bool(youtube.get("prune_after_upload", True))
+        else:
+            prune_after_upload = _prune_raw.strip().lower() in ("1", "true", "yes")
         instagram = data.get("instagram", {})
         instagram_user_id = instagram_user_id or instagram.get("user_id")
         instagram_api_version = instagram.get("api_version", "v25.0")
@@ -232,6 +238,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_token_path = youtube_token_path or "/data/db/youtube-token.json"
         youtube_privacy = youtube_privacy or "unlisted"
         youtube_category_id, youtube_title_template = "20", "OSU! Completionist — {day} ({clips} maps)"
+        prune_after_upload = os.environ.get("PIPELINE_PRUNE_AFTER_UPLOAD", "true").strip().lower() in (
+            "1", "true", "yes")
         instagram_api_version, instagram_caption_template = (
             "v25.0", "OSU! Completionist — {day} ({clips} maps)")
         fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -286,6 +294,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_privacy=youtube_privacy or "unlisted",
         youtube_category_id=youtube_category_id,
         youtube_title_template=youtube_title_template,
+        prune_after_upload=prune_after_upload,
         instagram_user_id=instagram_user_id,
         instagram_token=instagram_token,
         instagram_api_version=instagram_api_version,

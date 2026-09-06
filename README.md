@@ -188,6 +188,17 @@ with backoff, and every upload is recorded in SQLite so restarts can't
 duplicate. Refresh tokens renew silently; re-run `auth-youtube` only if
 Google revokes access.
 
+Storage: per-map renders are deleted automatically once their day is safely
+on YouTube (`[youtube] prune_after_upload`, on by default). Replays, DB
+rows, daily videos, songs and logs are always kept — renders are pure
+derivatives and rebuild exactly. Manual control:
+
+```bash
+docker compose run --rm pipeline prune --day 2026-09-06 --dry-run
+docker compose run --rm pipeline prune --day 2026-09-06
+docker compose run --rm pipeline prune --backfill   # pre-membership renders
+```
+
 Instagram uploads (feed VIDEO posts — landscape dailies aren't Reels-shaped):
 
 ```bash

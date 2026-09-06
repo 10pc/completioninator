@@ -77,6 +77,9 @@ token_path = "/data/db/youtube-token.json"
 privacy = "unlisted"
 category_id = "20"
 title_template = "osu!completionist journey — {day} ({clips} passes)"
+# Delete per-map renders once their day is safely on YouTube (replays, DB
+# rows, dailies, songs and logs are always kept). Disable to keep everything.
+prune_after_upload = true
 
 [instagram]
 # Token + user ID ONLY via env (this file is committed):

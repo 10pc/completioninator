@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS uploads (
     uploaded_at TEXT,
     PRIMARY KEY (day, platform)
 );
+CREATE TABLE IF NOT EXISTS daily_clips (
+    day TEXT NOT NULL,
+    replay_id INTEGER NOT NULL,
+    PRIMARY KEY (day, replay_id)
+);
 """
 
 # Milestone 2 columns; applied idempotently to M1 databases.
@@ -255,14 +260,46 @@ def get_uncomposited(conn: sqlite3.Connection) -> list:
     return [dict(r) for r in rows]
 
 
-def mark_composited(conn: sqlite3.Connection, replay_ids: list[int]) -> None:
+def mark_composited(conn: sqlite3.Connection, replay_ids: list[int], day: str | None = None) -> None:
     if not replay_ids:
         return
     placeholders = ",".join("?" for _ in replay_ids)
     conn.execute(
         f"UPDATE replays SET status = 'composited' WHERE id IN ({placeholders})", replay_ids
     )
+    if day is not None:
+        conn.executemany(
+            "INSERT OR IGNORE INTO daily_clips (day, replay_id) VALUES (?, ?)",
+            [(day, rid) for rid in replay_ids],
+        )
     conn.commit()
+
+
+def clips_of_day(conn: sqlite3.Connection, day: str) -> list[dict]:
+    """Render files mapped to a daily video (for post-upload pruning)."""
+    rows = conn.execute(
+        "SELECT r.id, r.render_path FROM daily_clips dc JOIN replays r ON r.id = dc.replay_id "
+        "WHERE dc.day = ?",
+        (day,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def composited_clips(conn: sqlite3.Connection) -> list[dict]:
+    """All composited clips with render files (backfill + audits)."""
+    rows = conn.execute(
+        "SELECT id, day, render_path FROM replays "
+        "WHERE status = 'composited' AND render_path IS NOT NULL ORDER BY day, id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def max_uploaded_day(conn: sqlite3.Connection, platform: str = "youtube") -> str | None:
+    row = conn.execute(
+        "SELECT MAX(day) AS m FROM uploads WHERE platform = ? AND status = 'uploaded'",
+        (platform,),
+    ).fetchone()
+    return row["m"] if row else None
 
 
 def record_daily(conn: sqlite3.Connection, day: str, path: str, clips: int,

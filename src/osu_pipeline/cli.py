@@ -74,6 +74,13 @@ def _build_parser() -> argparse.ArgumentParser:
     up.add_argument("--platform", choices=("youtube", "instagram"), default="youtube")
     up.add_argument("--force", action="store_true", help="Re-upload even if recorded")
     up.add_argument("--db", default=None, help="Override database path")
+
+    pr = sub.add_parser("prune", help="Delete render files covered by YouTube uploads")
+    pr.add_argument("--day", default=None, help="Prune one uploaded day")
+    pr.add_argument("--backfill", action="store_true", help="Prune pre-membership renders")
+    pr.add_argument("--dry-run", action="store_true", help="Report without deleting")
+    pr.add_argument("--force", action="store_true", help="Prune a day with no upload record")
+    pr.add_argument("--db", default=None, help="Override database path")
     return p
 
 
@@ -620,7 +627,7 @@ def _cmd_compose(args, cfg) -> int:
     audio_tmp.unlink(missing_ok=True)
     conn = database.connect(db_path)
     try:
-        database.mark_composited(conn, [c.id for c in kept])
+        database.mark_composited(conn, [c.id for c in kept], today)
         database.record_daily(conn, today, out_path.as_posix(), len(kept),
                               final.duration if final else total, span, snapshot)
     finally:
@@ -769,6 +776,70 @@ def _upload_youtube(conn, cfg, args, row: dict, video: Path) -> int:
     url = uploader.video_url(video_id)
     database.mark_uploaded(conn, args.day, "youtube", video_id, url)
     print(f"uploaded {args.day} -> {url}")
+    if cfg.prune_after_upload:
+        try:
+            n, freed = prune_day_renders(conn, args.day)
+            print(f"pruned {n} render files (~{freed / 1e6:.0f}MB freed)")
+        except Exception as exc:  # noqa: BLE001 - leftovers are harmless, next prune gets them
+            log.warning("post-upload prune failed (retry with `prune`): %s", exc)
+            print(f"prune skipped ({exc}); run `prune` later")
+    return 0
+
+
+def _delete_render_files(clips: list[dict], dry_run: bool) -> tuple[int, int]:
+    """Delete render_path files (missing_ok, warn-and-continue). Returns (files, bytes)."""
+    n, freed = 0, 0
+    for clip in clips:
+        p = Path(clip["render_path"]) if clip.get("render_path") else None
+        if p is None:
+            continue
+        try:
+            if p.exists():
+                freed += p.stat().st_size
+                if not dry_run:
+                    p.unlink()
+            n += 1
+        except OSError as exc:
+            log.warning("could not delete %s: %s", p, exc)
+    return n, freed
+
+
+def prune_day_renders(conn, day: str) -> tuple[int, int]:
+    """Delete render files mapped to an uploaded day. Returns (files, bytes)."""
+    return _delete_render_files(database.clips_of_day(conn, day), dry_run=False)
+
+
+def _cmd_prune(args, cfg) -> int:
+    db_path = Path(args.db) if args.db else cfg.database_path
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    try:
+        if args.backfill:
+            top = database.max_uploaded_day(conn)
+            if top is None:
+                print("backfill refused: no YouTube-uploaded day yet")
+                return 2
+            targets = [c for c in database.composited_clips(conn) if (c["day"] or "") <= top]
+            n, freed = _delete_render_files(targets, args.dry_run)
+            print(f"backfill {'would prune' if args.dry_run else 'pruned'} {n} files "
+                  f"(~{freed / 1e6:.0f}MB) at/below uploaded day {top}")
+            return 0
+        day = args.day
+        if day is None:
+            print("specify --day or --backfill", file=sys.stderr)
+            return 2
+        up = database.get_upload(conn, day, "youtube")
+        if (not up or up["status"] != "uploaded") and not args.force:
+            print(f"prune refused: day {day} has no YouTube upload (use --force)", file=sys.stderr)
+            return 2
+        if args.dry_run:
+            n, freed = _delete_render_files(database.clips_of_day(conn, day), dry_run=True)
+            print(f"would prune {n} files (~{freed / 1e6:.0f}MB) for day {day}")
+            return 0
+        n, freed = prune_day_renders(conn, day)
+        print(f"pruned {n} files (~{freed / 1e6:.0f}MB) for day {day}")
+    finally:
+        conn.close()
     return 0
 
 
@@ -831,6 +902,8 @@ def main(argv: list | None = None) -> int:
         return _cmd_auth_youtube(args, cfg)
     if args.command == "upload":
         return _cmd_upload(args, cfg)
+    if args.command == "prune":
+        return _cmd_prune(args, cfg)
     parser.print_help()
     return 2
 
