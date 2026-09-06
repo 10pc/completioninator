@@ -73,6 +73,7 @@ def test_segment_graph_references_longest_audio():
     assert "[0:a]aresample=48000" in graph  # longest clip's audio
     assert audio == "[aout]"
     assert "drawtext=" in graph and "HDR" in graph
+    assert "pad=1920:1080:0:0:black[vout]" in graph
 
 
 def test_single_clip_skips_xstack():

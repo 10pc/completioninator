@@ -155,7 +155,8 @@ def build_segment_graph(seg: Segment, longest_idx: int, width: int, grid_h: int,
         layout = layout_string(cols, rows, k, tw, th, header_h)
         chains.append(
             f"{labels}xstack=inputs={k}:layout={layout}:fill=black[vgrid]")
-    chains.append(f"[vgrid]{drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)}[vout]")
+    chains.append(f"[vgrid]{drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)}[vhead]")
+    chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vout]")
     audio = ""
     order = [longest_idx] + [i for i in range(k) if i != longest_idx]
     for i in order:
@@ -192,8 +193,8 @@ def encode_segment(ffmpeg: str, seg: Segment, graph_file: Path, audio_label: str
 
 
 def concat_segments(ffmpeg: str, seg_paths: list[Path], out_path: Path,
-                    timeout: int = 600) -> None:
-    lst = out_path.parent / "concat.txt"
+                    workdir: Path, timeout: int = 600) -> None:
+    lst = workdir / "concat.txt"
     lst.write_text("".join(f"file '{p.resolve()}'\n" for p in seg_paths))
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
            "-i", str(lst), "-c", "copy", str(out_path)]

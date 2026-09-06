@@ -431,7 +431,7 @@ def _cmd_compose(args, cfg) -> int:
                                       cfg.video_fps, cfg.video_preset, cfg.video_crf,
                                       min(seg_timeout, cfg.compose_timeout))
             seg_paths.append(seg_path)
-        compositor.concat_segments(ffmpeg, seg_paths, out_path)
+        compositor.concat_segments(ffmpeg, seg_paths, out_path, workdir)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         detail = ""
         if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
@@ -447,7 +447,6 @@ def _cmd_compose(args, cfg) -> int:
     for p in workdir.glob("seg-*.txt"):
         p.unlink(missing_ok=True)
     (workdir / "concat.txt").unlink(missing_ok=True)
-
     conn = database.connect(db_path)
     try:
         database.mark_composited(conn, [c.id for c in kept])
