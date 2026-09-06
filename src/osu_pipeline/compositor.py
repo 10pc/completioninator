@@ -106,7 +106,10 @@ def grid_dims(k: int, aspect: float = 1.92) -> tuple[int, int]:
 
 
 def tile_size(cols: int, rows: int, width: int, grid_h: int) -> tuple[int, int]:
-    return max(2, width // cols), max(2, grid_h // rows)
+    """Integer tile size, rounded down to even (x264 yuv420p needs even dims)."""
+    tw = max(2, (width // cols) // 2 * 2)
+    th = max(2, (grid_h // rows) // 2 * 2)
+    return tw, th
 
 
 def layout_string(cols: int, rows: int, k: int, tw: int, th: int, y0: int) -> str:

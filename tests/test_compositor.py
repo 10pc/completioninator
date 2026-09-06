@@ -30,6 +30,14 @@ def test_layout_string_positions():
     assert compositor.layout_string(1, 1, 1, 1920, 1000, 80) == "0_80"
 
 
+def test_tile_size_stays_even():
+    for k in (1, 2, 3, 5, 12, 21, 300):
+        cols, rows = compositor.grid_dims(k)
+        tw, th = compositor.tile_size(cols, rows, 1920, 1000)
+        assert tw % 2 == 0 and th % 2 == 0, (k, cols, rows, tw, th)
+        assert cols * tw <= 1920 and 80 + rows * th <= 1080
+
+
 def test_plan_segments_shrinking_grid():
     clips = [_clip(1, 100.0), _clip(2, 60.0), _clip(3, 30.0)]
     segs = compositor.plan_segments(clips)
