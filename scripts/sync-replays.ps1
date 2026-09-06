@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Copies only *.osr files missing at the destination (never overwrites,
-  never deletes). Files land in a .staging subdir first, then move into
+  never deletes). Files land in a staging subdir first, then move into
   place atomically, so the pipeline scanner never sees a partial .osr.
 
   Defaults come from $env:OSU_REPLAYS_SOURCE / $env:NAS_REPLAYS_DEST.
@@ -17,10 +17,20 @@
 param(
   [string]$Source = $env:OSU_REPLAYS_SOURCE,
   [string]$Destination = $env:NAS_REPLAYS_DEST,
-  [string]$StagingDirName = ".staging"
+  [string]$StagingDirName = "staging"
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-RelativePath([string]$Base, [string]$Target) {
+  # [IO.Path]::GetRelativePath doesn't exist on Windows PowerShell 5.1 (.NET Framework).
+  $base = $Base.TrimEnd('\', '/') + '\'
+  if ($Target.StartsWith($base, [StringComparison]::OrdinalIgnoreCase)) {
+    return $Target.Substring($base.Length)
+  }
+  $u1 = [Uri]$base; $u2 = [Uri]$Target
+  return [Uri]::UnescapeDataString($u1.MakeRelativeUri($u2).ToString().Replace('/', '\'))
+}
 
 if ([string]::IsNullOrWhiteSpace($Source)) { throw "Source not set. Pass -Source or set `$env:OSU_REPLAYS_SOURCE." }
 if ([string]::IsNullOrWhiteSpace($Destination)) { throw "Destination not set. Pass -Destination or set `$env:NAS_REPLAYS_DEST." }
@@ -32,7 +42,7 @@ $staging = Join-Path $Destination $StagingDirName
 # 0. Plan: which *.osr files are actually missing at the destination?
 $planned = @(Get-ChildItem -LiteralPath $Source -Recurse -File -Filter "*.osr" -ErrorAction SilentlyContinue |
   Where-Object {
-    $rel = [System.IO.Path]::GetRelativePath($Source, $_.FullName)
+    $rel = Get-RelativePath $Source $_.FullName
     -not (Test-Path -LiteralPath (Join-Path $Destination $rel))
   })
 Write-Output "new replays to publish: $($planned.Count)"
@@ -44,7 +54,7 @@ if (-not $PSCmdlet.ShouldProcess("$($planned.Count) new replay(s)", "sync to $De
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
 # Pre-flight: prove the destination is writable before robocopy runs.
-$probe = Join-Path $staging ".write-test"
+$probe = Join-Path $staging "write-test.tmp"
 try {
   [System.IO.File]::WriteAllText($probe, "ok")
   Remove-Item -LiteralPath $probe -Force
@@ -54,20 +64,28 @@ try {
 
 # 1. Bulk copy *.osr (only) into staging. /XC /XN /XO = skip anything already
 #    staged (mirror of rsync --ignore-existing); no /MIR so nothing is deleted.
+#    /COPY:DT = data + timestamps only; some SMB servers reject attribute
+#    changes (robocopy ERROR 50) when syncing file attributes.
 $rcLog = Join-Path ([System.IO.Path]::GetTempPath()) "osu-sync-robocopy.log"
-$rcArgs = @($Source, $staging, "*.osr", "/E", "/XC", "/XN", "/XO", "/R:2", "/W:3", "/NJH", "/NJS", "/LOG:$rcLog")
+$rcArgs = @($Source, $staging, "*.osr", "/E", "/COPY:DT", "/XC", "/XN", "/XO", "/R:2", "/W:3", "/NJH", "/NJS", "/LOG:$rcLog")
 & robocopy @rcArgs | Out-Null
 $rc = $LASTEXITCODE
+$rcTail = if (Test-Path -LiteralPath $rcLog) { (Get-Content -LiteralPath $rcLog -Tail 15) -join "`n" } else { "(no log)" }
 if ($rc -ge 8) {
-  $tail = if (Test-Path -LiteralPath $rcLog) { (Get-Content -LiteralPath $rcLog -Tail 15) -join "`n" } else { "(no log)" }
-  throw "robocopy failed with exit code $rc. Log tail:`n$tail"
+  throw "robocopy failed with exit code $rc. Log tail:`n$rcTail"
+}
+
+# Cross-check: robocopy exit 0 with nothing staged means it silently did nothing.
+$stagedCount = @(Get-ChildItem -LiteralPath $staging -Recurse -File -Filter "*.osr" -ErrorAction SilentlyContinue).Count
+if ($planned.Count -gt 0 -and $stagedCount -eq 0) {
+  throw "robocopy copied 0 of $($planned.Count) planned files (exit=$rc). Log tail:`n$rcTail"
 }
 
 # 2. Move staged files into place (same-share move = atomic rename).
 $copied = 0; $skipped = 0
 $files = Get-ChildItem -LiteralPath $staging -Recurse -File -Filter "*.osr" -ErrorAction SilentlyContinue
 foreach ($f in $files) {
-  $rel = [System.IO.Path]::GetRelativePath($staging, $f.FullName)
+  $rel = Get-RelativePath $staging $f.FullName
   $final = Join-Path $Destination $rel
   if (Test-Path -LiteralPath $final) {
     $skipped++
@@ -84,9 +102,8 @@ foreach ($f in $files) {
   }
 }
 
-# 3. Prune empty staging dirs left behind.
-Get-ChildItem -LiteralPath $staging -Directory -Recurse |
-  Sort-Object { $_.FullName.Length } -Descending |
-  ForEach-Object { if (-not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $_.FullName -Force } }
+# NOTE: no pruning step — some SMB servers reject directory deletion, so empty
+# staging subdirs are left behind deliberately. They are harmless (the scanner
+# only looks at *.osr files) and reused by the next run.
 
 Write-Output "sync complete: published=$copied already_archived=$skipped (robocopy exit=$rc)"

@@ -39,7 +39,7 @@ Gaming PC sync — Windows/SMB (operator runs on gaming PC):
 ```
 
 Only new `.osr` files are copied (never overwritten/deleted); they stage in
-`.staging/` then move into place so the scanner never sees a partial file.
+`staging/` then move into place so the scanner never sees a partial file.
 
 ```powershell
 # later: hourly background sync (scheduling deferred for now)
