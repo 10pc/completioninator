@@ -1,4 +1,4 @@
-# osu-completionist pipeline — Milestone 2: Rendering
+# osu-completionist pipeline — automated .osr → danser → grid → daily video
 
 > apologies for the vibecoded slop. i swear i know how to code, i'm just very lazy
 
@@ -7,10 +7,14 @@ Windows dev (this machine):
 ```powershell
 pip install -r requirements.txt
 pip install -e .
-osu-pipeline discover --scan-root ./fixtures/replays --db ./data/db/pipeline.sqlite
-osu-pipeline status --db ./data/db/pipeline.sqlite
+osu-pipeline --help
 pytest
 ```
+
+Use `--scan-root` / `--db` flags (or `PIPELINE_REPLAYS_DIR` /
+`PIPELINE_DATABASE` env) to point at real folders; `pytest` is the
+source of truth and stays green on Windows (ffmpeg-dependent paths
+are unit-tested with stubs).
 
 Ubuntu render server (run by operator):
 
@@ -22,6 +26,8 @@ docker compose run --rm pipeline discover
 docker compose run --rm pipeline render --limit 30
 docker compose run --rm pipeline status
 ls data/rendered/*/
+# or the whole close-out in one go:
+docker compose run --rm pipeline daily --limit 100
 ```
 
 Steady state is two host cron jobs (single worker, ~1 min/map at 720p30):
