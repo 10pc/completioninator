@@ -26,10 +26,9 @@ if ([string]::IsNullOrWhiteSpace($Source)) { throw "Source not set. Pass -Source
 if ([string]::IsNullOrWhiteSpace($Destination)) { throw "Destination not set. Pass -Destination or set `$env:NAS_REPLAYS_DEST." }
 
 $watcher = Join-Path $PSScriptRoot "watch-replays.ps1"
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument @(
-  "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$watcher`"",
-  "-Source", "`"$Source`"", "-Destination", "`"$Destination`""
-)
+$argList = "-NoProfile -ExecutionPolicy Bypass -File `"$watcher`" " +
+           "-Source `"$Source`" -Destination `"$Destination`""
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argList
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
