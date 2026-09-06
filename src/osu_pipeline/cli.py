@@ -94,8 +94,11 @@ def _cmd_status(args, cfg) -> int:
             print(f"  {row['day']}: {row['total']}")
         latest = database.get_latest_daily(conn)
         if latest:
+            snap = ""
+            if latest.get("passed"):
+                snap = f" [{latest['passed']}/{latest.get('left')} ({latest.get('pct')})]"
             print(f"\nLatest daily: {latest['path']} "
-                  f"({latest['clips']} clips, day {latest['day']})")
+                  f"({latest['clips']} clips, day {latest['day']}){snap}")
     finally:
         conn.close()
     return 0
@@ -407,6 +410,22 @@ def _cmd_compose(args, cfg) -> int:
     print(f"batch: {len(kept)} clips ({sum(c.duration for c in kept):.0f}s content), "
           f"{len(rolled)} roll forward to next batch")
 
+    # Snapshot completion stats FIRST, before any encoding: the outro bakes
+    # this exact snapshot in, and it is saved with the daily record.
+    comp_stats = None
+    try:
+        comp_stats = completion.fetch_completion(cfg.completion_profile_url)
+    except completion.CompletionError as exc:
+        log.warning("completion stats fetch failed: %s", exc)
+        comp_stats = completion.from_manual(
+            cfg.completion_passed, cfg.completion_left, cfg.completion_pct)
+    snapshot = None
+    if comp_stats:
+        snapshot = {"passed": comp_stats.passed, "left": comp_stats.left, "pct": comp_stats.pct}
+        print(f"completion snapshot: {comp_stats.line1} ({comp_stats.line2})")
+    else:
+        print("completion stats unavailable; skipping outro")
+
     out_path = cfg.daily_dir / f"day-{today}.mp4"
     suffix = 2
     while out_path.exists():
@@ -418,18 +437,7 @@ def _cmd_compose(args, cfg) -> int:
     timeline = compositor.plan_timeline(kept, morph_s=cfg.morph_seconds,
                                         width=cfg.video_width, grid_h=grid_h,
                                         header_h=cfg.header_height)
-    comp_stats = None
-    try:
-        comp_stats = completion.fetch_completion(cfg.completion_profile_url)
-    except completion.CompletionError as exc:
-        log.warning("completion stats fetch failed: %s", exc)
-        comp_stats = completion.from_manual(
-            cfg.completion_passed, cfg.completion_left, cfg.completion_pct)
     outro_dur = cfg.outro_seconds if comp_stats else 0.0
-    if comp_stats:
-        print(f"completion: {comp_stats.line1} ({comp_stats.line2})")
-    else:
-        print("completion stats unavailable; skipping outro")
     n_seg = sum(isinstance(s, compositor.Segment) for s in timeline)
     n_morph = len(timeline) - n_seg
     print(f"encoding {n_seg} static + {n_morph} morph spans"
@@ -506,7 +514,7 @@ def _cmd_compose(args, cfg) -> int:
     try:
         database.mark_composited(conn, [c.id for c in kept])
         database.record_daily(conn, today, out_path.as_posix(), len(kept),
-                              final.duration if final else total, span)
+                              final.duration if final else total, span, snapshot)
     finally:
         conn.close()
     return 0

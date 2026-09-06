@@ -88,7 +88,8 @@ def test_compose_happy_path(tmp_path: Path, monkeypatch, capsys):
     assert main(["--config", str(cfg), "compose"]) == 0
     out_text = capsys.readouterr().out
     assert "batch: 3 clips" in out_text and "morph spans" in out_text
-    assert "outro" in out_text and "completion: 1,133/147,163 (0.73%)" in out_text
+    assert "outro" in out_text
+    assert "completion snapshot: 1,133/147,163 (0.73%)" in out_text
 
     conn = database.connect(db)
     try:
@@ -96,6 +97,7 @@ def test_compose_happy_path(tmp_path: Path, monkeypatch, capsys):
         latest = database.get_latest_daily(conn)
         assert latest and latest["clips"] == 3 and latest["path"].endswith(".mp4")
         assert Path(latest["path"]).exists()
+        assert (latest["passed"], latest["left"], latest["pct"]) == ("1,133", "147,163", "0.73%")
     finally:
         conn.close()
 
@@ -171,5 +173,31 @@ def test_compose_keeps_longest_max_clips(tmp_path: Path, monkeypatch, capsys):
     try:
         counts = database.get_counts(conn)
         assert counts["composited"] == 2 and counts["rendered"] == 3
+        latest = database.get_latest_daily(conn)
+        assert latest and latest["passed"] is None  # no stats: skipped outro
+    finally:
+        conn.close()
+
+
+def test_daily_migration_adds_snapshot_columns(tmp_path: Path):
+    import sqlite3
+
+    db = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        "CREATE TABLE daily (day TEXT PRIMARY KEY, path TEXT, clips INTEGER, "
+        "seconds REAL, span TEXT, created_at TEXT);"
+    )
+    conn.commit()
+    conn.close()
+    database.init_db(db)
+    conn = database.connect(db)
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(daily)").fetchall()}
+        assert {"passed", "left", "pct"} <= cols
+        database.record_daily(conn, "2026-09-06", "/x.mp4", 3, 100.0, None,
+                              {"passed": "1,133", "left": "147,163", "pct": "0.73%"})
+        row = database.get_latest_daily(conn)
+        assert (row["passed"], row["left"], row["pct"]) == ("1,133", "147,163", "0.73%")
     finally:
         conn.close()

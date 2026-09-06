@@ -31,14 +31,20 @@ CREATE TABLE IF NOT EXISTS daily (
     clips INTEGER NOT NULL,
     seconds REAL,
     span TEXT,
+    passed TEXT,
+    left TEXT,
+    pct TEXT,
     created_at TEXT NOT NULL
 );
 """
 
 # Milestone 2 columns; applied idempotently to M1 databases.
 MIGRATIONS = [
-    "ALTER TABLE replays ADD COLUMN beatmap_hash TEXT",
-    "ALTER TABLE replays ADD COLUMN beatmapset_id INTEGER",
+    ("replays", "ALTER TABLE replays ADD COLUMN beatmap_hash TEXT"),
+    ("replays", "ALTER TABLE replays ADD COLUMN beatmapset_id INTEGER"),
+    ("daily", "ALTER TABLE daily ADD COLUMN passed TEXT"),
+    ("daily", "ALTER TABLE daily ADD COLUMN left TEXT"),
+    ("daily", "ALTER TABLE daily ADD COLUMN pct TEXT"),
 ]
 
 
@@ -57,8 +63,8 @@ def init_db(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
-        existing = {row["name"] for row in conn.execute("PRAGMA table_info(replays)").fetchall()}
-        for stmt in MIGRATIONS:
+        for table, stmt in MIGRATIONS:
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             col = stmt.split("ADD COLUMN")[1].strip().split()[0]
             if col not in existing:
                 conn.execute(stmt)
@@ -241,12 +247,18 @@ def mark_composited(conn: sqlite3.Connection, replay_ids: list[int]) -> None:
 
 
 def record_daily(conn: sqlite3.Connection, day: str, path: str, clips: int,
-                 seconds: float | None, span: str | None) -> None:
+                 seconds: float | None, span: str | None,
+                 stats: dict | None = None) -> None:
+    """Record a finished daily video, including the completion snapshot baked in."""
+    stats = stats or {}
     conn.execute(
-        "INSERT INTO daily (day, path, clips, seconds, span, created_at) VALUES (?, ?, ?, ?, ?, ?) "
+        "INSERT INTO daily (day, path, clips, seconds, span, passed, left, pct, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(day) DO UPDATE SET path=excluded.path, clips=excluded.clips, "
-        "seconds=excluded.seconds, span=excluded.span, created_at=excluded.created_at",
-        (day, path, clips, seconds, span, _utcnow_iso()),
+        "seconds=excluded.seconds, span=excluded.span, passed=excluded.passed, "
+        "left=excluded.left, pct=excluded.pct, created_at=excluded.created_at",
+        (day, path, clips, seconds, span,
+         stats.get("passed"), stats.get("left"), stats.get("pct"), _utcnow_iso()),
     )
     conn.commit()
 
