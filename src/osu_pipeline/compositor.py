@@ -239,11 +239,14 @@ def build_segment_graph(seg: Segment, width: int, grid_h: int,
     rects = layout_rects(cols, rows, k, tw, th, width, grid_h, header_h)
     chains = []
     if k == 1:
-        # xstack needs >= 2 inputs; position the lone tile via pad offsets.
+        # xstack needs >= 2 inputs; paint the lone tile straight onto the
+        # full canvas. Coordinates are absolute (header included), exactly
+        # like the xstack layout positions below — forgetting the header
+        # offset parks the tile 80px too high under the header text.
         r = rects[0]
         chains.append(f"[0:v]scale={tw}:{th},setsar=1,"
                       f"fps={fps},setpts=PTS-STARTPTS,"
-                      f"pad={width}:{grid_h}:{r.x}:{r.y - header_h}:black[vgrid]")
+                      f"pad={width}:{grid_h + header_h}:{r.x}:{r.y}:black[vgrid]")
     else:
         for i, r in enumerate(rects):
             chains.append(

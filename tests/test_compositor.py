@@ -171,4 +171,6 @@ def test_single_clip_skips_xstack():
         seg, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
     assert "xstack" not in graph
     assert "[0:v]scale=1760:990,setsar=1" in graph  # k=1: exact 16:9, centered
+    # absolute canvas coords: tile sits below the header, not under it
+    assert "pad=1920:1080:80:85:black[vgrid]" in graph
     assert "fade=" not in graph
