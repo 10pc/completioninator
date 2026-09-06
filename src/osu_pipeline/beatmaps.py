@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import time
 import urllib.parse
 import urllib.request
@@ -367,6 +368,30 @@ def _download_any(chain: list[tuple[str, str]], beatmapset_id: int,
     raise last
 
 
+def stage_into_songs(cache_path: Path, songs_dir: Path, beatmapset_id: int) -> Path:
+    """Ensure the set is visible in the Songs dir, copying from cache if needed.
+
+    danser deletes .osz files after unpacking, so the Songs copy is
+    expendable; the cache copy is the durable one. If an unpacked dir with
+    .osu files already exists, nothing is copied (danser uses it directly).
+    Returns the Songs .osz path (may not exist in the unpacked-dir case).
+    """
+    songs_dir = Path(songs_dir)
+    songs_dir.mkdir(parents=True, exist_ok=True)
+    dest = songs_dir / f"{beatmapset_id}.osz"
+    if dest.exists() and dest.stat().st_size > 0:
+        return dest
+    unpacked = songs_dir / str(beatmapset_id)
+    try:
+        if unpacked.is_dir() and any(unpacked.glob("*.osu")):
+            return dest
+    except OSError:
+        pass
+    shutil.copyfile(cache_path, dest)
+    log.info("staged beatmapset %s into Songs dir", beatmapset_id)
+    return dest
+
+
 def ensure_beatmap(
     mirror: str,
     beatmap_hash: str | None,
@@ -379,11 +404,21 @@ def ensure_beatmap(
     backend: str = "hinamizawa",
     fallback_mirror: str | None = "https://catboy.best",
     fallback_backend: str = "mino",
+    cache_dir: Path | str | None = None,
 ) -> tuple[int, Path]:
-    """Ensure the .osz for a replay is in the Songs dir. Returns (set_id, path)."""
+    """Ensure the .osz for a replay is visible in the Songs dir.
+
+    Downloads land in the cache dir (durable); a copy is staged into Songs
+    because danser deletes .osz files after unpacking. cache_dir defaults to
+    songs_dir (old behavior: re-download after every danser run).
+    Returns (set_id, Songs .osz path).
+    """
+    songs_path = Path(songs_dir)
+    cache_path = Path(cache_dir) if cache_dir else songs_path
     chain = _mirror_chain(mirror, backend, fallback_mirror, fallback_backend)
     if override_set_id is not None:
-        return override_set_id, _download_any(chain, override_set_id, songs_dir, timeout)
+        dl = _download_any(chain, override_set_id, cache_path, timeout)
+        return override_set_id, stage_into_songs(dl, songs_path, override_set_id)
     if not beatmap_hash:
         raise BeatmapError("no_beatmap: replay has no beatmap hash (unparseable .osr?)")
     transient_seen = False
@@ -409,4 +444,5 @@ def ensure_beatmap(
                 f"beatmap services unavailable (transient) for hash {beatmap_hash}",
                 transient=True)
         raise BeatmapError(f"no_beatmap: hash {beatmap_hash} not found on mirror")
-    return set_id, _download_any(chain, set_id, songs_dir, timeout)
+    dl = _download_any(chain, set_id, cache_path, timeout)
+    return set_id, stage_into_songs(dl, songs_path, set_id)

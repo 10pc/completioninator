@@ -244,3 +244,53 @@ def test_replay_hash_in_songs(tmp_path: Path):
     assert beatmaps.replay_hash_in_songs(songs, 77, digest) is True
     assert beatmaps.replay_hash_in_songs(songs, 77, "0" * 32) is False
     assert beatmaps.replay_hash_in_songs(songs, 78, digest) is None  # no dir
+
+
+def test_stage_into_songs_prefers_existing(tmp_path: Path):
+    songs = tmp_path / "songs"
+    songs.mkdir()
+    cache = tmp_path / "cache" / "42.osz"
+    cache.parent.mkdir()
+    cache.write_bytes(b"PK-new")
+    # existing Songs copy wins, cache untouched
+    (songs / "42.osz").write_bytes(b"PK-old")
+    out = beatmaps.stage_into_songs(cache, songs, 42)
+    assert out == songs / "42.osz" and out.read_bytes() == b"PK-old"
+    # unpacked dir wins without copying
+    (songs / "43").mkdir()
+    (songs / "43" / "x.osu").write_bytes(b"data")
+    (tmp_path / "cache" / "43.osz").write_bytes(b"PK-new")
+    out = beatmaps.stage_into_songs(tmp_path / "cache" / "43.osz", songs, 43)
+    assert out == songs / "43.osz" and not out.exists()
+    # neither present: copies from cache
+    out = beatmaps.stage_into_songs(cache, songs, 44)
+    assert out.read_bytes() == b"PK-new"
+
+
+def test_ensure_uses_cache_then_stages(mirror, tmp_path: Path, monkeypatch):
+    import urllib.request
+
+    songs = tmp_path / "songs"
+    cache = tmp_path / "cache"
+    hits = {"n": 0}
+    real_open = urllib.request.urlopen
+
+    def _counting_open(*a, **k):
+        hits["n"] += 1
+        return real_open(*a, **k)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _counting_open)
+    # override path: downloads once into cache, stages into songs
+    set_id, path = beatmaps.ensure_beatmap(
+        mirror, None, songs, override_set_id=42, backend="mino",
+        fallback_mirror=mirror, fallback_backend="mino", cache_dir=cache)
+    assert set_id == 42 and path == songs / "42.osz" and path.exists()
+    assert (cache / "42.osz").exists() and hits["n"] == 1
+    # danser eats the Songs copy: next ensure re-stages locally, no download
+    (songs / "42.osz").unlink()
+    (songs / "42").mkdir()
+    (songs / "42" / "x.osu").write_bytes(b"data")
+    set_id, path = beatmaps.ensure_beatmap(
+        mirror, None, songs, override_set_id=42, backend="mino",
+        fallback_mirror=mirror, fallback_backend="mino", cache_dir=cache)
+    assert set_id == 42 and hits["n"] == 1

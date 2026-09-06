@@ -36,6 +36,9 @@ mirror = "https://mirror.hinamizawa.ai"
 fallback_backend = "mino"
 fallback_mirror = "https://catboy.best"
 songs_dir = "/data/beatmaps/songs"
+# Durable .osz downloads. danser deletes the Songs copy after unpacking, so
+# without this every render would re-download from the mirror.
+cache_dir = "/data/beatmaps/cache"
 
 # Optional: official osu! API fallback for hash resolution.
 # Free OAuth app at https://osu.ppy.sh/home/account/edit (no callback needed

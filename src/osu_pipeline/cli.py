@@ -370,6 +370,7 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
                 osu_client_id=cfg.osu_client_id, osu_client_secret=cfg.osu_client_secret,
                 backend=cfg.beatmap_backend,
                 fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
+                cache_dir=cfg.beatmaps_cache,
             )
             database.set_beatmap(conn, jid, bhash, set_id)
         except beatmaps.BeatmapError as exc:
