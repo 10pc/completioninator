@@ -76,7 +76,7 @@ token_path = "/data/db/youtube-token.json"
 # flip to public after the project audit passes.
 privacy = "unlisted"
 category_id = "20"
-title_template = "OSU! Completionist — {day} ({clips} maps)"
+title_template = "osu!completionist journey — {day} ({clips} passes)"
 
 [instagram]
 # Token + user ID ONLY via env (this file is committed):
