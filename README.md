@@ -36,14 +36,17 @@ Steady state is two host cron jobs (single worker, ~1 min/map at 720p30):
 # crontab -e
 # intra-day burn, every 30 min:
 */30 * * * * cd ~/completioninator && docker compose run --rm pipeline render --limit 25
-# nightly close-out at 03:00 UTC (discover, render, compose if anything new):
-0 3 * * * cd ~/completioninator && docker compose run --rm pipeline daily --limit 100
+# nightly close-out at 03:00 UTC (discover, render, compose, publish backlog):
+0 3 * * * cd ~/completioninator && docker compose run --rm pipeline daily --limit 100 --upload
 ```
 
-`daily` is just the three stages chained with one summary line
-(`discovered new=X rendered=Y failed=Z composed=ok|skipped|failed`); a day is
-composable whenever it has rendered clips, and stragglers roll forward, so
-midnight renders never break batching.
+`daily` is just the stages chained with one summary line
+(`discovered new=X rendered=Y failed=Z composed=ok|skipped|failed
+uploaded=youtube:ok,instagram:unconfigured`); a day is composable whenever
+it has rendered clips, and stragglers roll forward, so midnight renders
+never break batching. `--upload` publishes the latest daily missing a
+success row per configured platform (retrying yesterday's failures) and
+skips platforms without credentials.
 
 Watch a batch and stop it mid-run:
 
