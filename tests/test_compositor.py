@@ -25,9 +25,21 @@ def test_grid_dims():
         raise AssertionError("grid_dims(0) should raise")
 
 
-def test_layout_string_positions():
-    assert compositor.layout_string(2, 2, 3, 100, 50, 80) == "0_80|100_80|0_130"
-    assert compositor.layout_string(1, 1, 1, 1920, 1000, 80) == "0_80"
+def test_tile_boxes_are_169_centered_and_bounded():
+    for k in (1, 2, 3, 5, 12, 21, 300):
+        cols, rows = compositor.grid_dims(k)
+        tw, th = compositor.tile_size(cols, rows, 1920, 1000)
+        assert tw % 2 == 0 and th % 2 == 0
+        assert tw * 9 == th * 16, (k, tw, th)  # exactly 16:9
+        rects = compositor.layout_rects(cols, rows, k, tw, th, 1920, 1000, 80)
+        assert len(rects) == k
+        for r in rects:
+            assert r.w * 9 == r.h * 16  # aspect preserved: lerp stays exact
+            assert r.x >= 0 and r.y >= 80
+            assert r.x + r.w <= 1920 and r.y + r.h <= 1080
+        # block is centered: left and right margins differ by at most a tile
+        xs = [r.x for r in rects if r.y == rects[0].y]
+        assert min(xs) == (1920 - len(xs) * tw) // 2
 
 
 def test_tile_size_stays_even():
@@ -53,7 +65,7 @@ def test_plan_timeline_static_and_morphs():
     assert len(morph.tiles) == 3
     dying = [t for t in morph.tiles if t.dying]
     assert len(dying) == 1 and dying[0].clip_id == 3
-    assert (dying[0].bw, dying[0].bh) == (8, 8)
+    assert (dying[0].bw, dying[0].bh) == (16, 9)
     # final static span holds the longest clip alone
     assert [c.id for c in spans[-1].active] == [1]
 
@@ -103,7 +115,9 @@ def test_segment_graph_video_only_aspect():
         seg, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
     assert "xstack=inputs=2:layout=" in graph
     assert ":fill=black" in graph
-    assert "force_original_aspect_ratio=decrease" in graph
+    # plain scale into exact 16:9 boxes: no letterbox pad inside tiles
+    assert "[0:v]scale=960:540,setsar=1" in graph
+    assert "(ow-iw)/2" not in graph
     # no fades: morph spans own all transitions; no audio: separate mix
     assert "fade=" not in graph
     assert "aresample" not in graph and "[aout]" not in graph
@@ -133,5 +147,5 @@ def test_single_clip_skips_xstack():
     graph = compositor.build_segment_graph(
         seg, 1920, 1000, 80, 30, "HDR", "/font.ttf", 36)
     assert "xstack" not in graph
-    assert "[0:v]scale=1920:1000" in graph
+    assert "[0:v]scale=1760:990,setsar=1" in graph  # k=1: exact 16:9, centered
     assert "fade=" not in graph

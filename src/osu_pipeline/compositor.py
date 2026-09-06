@@ -83,18 +83,14 @@ def grid_dims(k: int, aspect: float = 1.92) -> tuple[int, int]:
 
 
 def tile_size(cols: int, rows: int, width: int, grid_h: int) -> tuple[int, int]:
-    """Integer tile size, rounded down to even (x264 yuv420p needs even dims)."""
-    tw = max(2, (width // cols) // 2 * 2)
-    th = max(2, (grid_h // rows) // 2 * 2)
-    return tw, th
+    """Tile box as exact multiples of 32x18: always precisely 16:9 and even.
 
-
-def layout_string(cols: int, rows: int, k: int, tw: int, th: int, y0: int) -> str:
-    """Absolute-pixel xstack layout, row-major; ragged last row needs no padding."""
-    parts = []
-    for i in range(k):
-        parts.append(f"{(i % cols) * tw}_{y0 + (i // cols) * th}")
-    return "|".join(parts)
+    m is the largest integer fitting both dimensions, so rows*th never
+    overflows the grid area; leftover space is distributed by centering.
+    Linear lerps between such boxes stay exactly 16:9 at every instant.
+    """
+    m = max(1, min((width // cols) // 32, (grid_h // rows) // 18))
+    return 32 * m, 18 * m
 
 
 @dataclass
@@ -105,9 +101,22 @@ class Rect:
     h: int
 
 
-def layout_rects(cols: int, rows: int, k: int, tw: int, th: int, y0: int) -> list[Rect]:
-    """Tile boxes in grid-position order (position i holds the i-th clip)."""
-    return [Rect((i % cols) * tw, y0 + (i // cols) * th, tw, th) for i in range(k)]
+def layout_rects(cols: int, rows: int, k: int, tw: int, th: int, width: int,
+                 grid_h: int, y0: int) -> list[Rect]:
+    """Tile boxes in grid-position order, block centered in the grid area.
+
+    Ragged last rows are centered too, so margins are never lopsided. Every
+    box is 16:9 by construction (see tile_size), matching the 16:9 sources,
+    so plain scaling stays aspect-exact with no letterbox bars.
+    """
+    y_base = y0 + max(0, (grid_h - rows * th) // 2)
+    rects = []
+    for i in range(k):
+        row, col = i // cols, i % cols
+        row_count = min(cols, k - row * cols)
+        x_base = max(0, (width - row_count * tw) // 2)
+        rects.append(Rect(x_base + col * tw, y_base + row * th, tw, th))
+    return rects
 
 
 @dataclass
@@ -180,8 +189,8 @@ def _morph_tiles(alive: list[Clip], survivors: list[Clip],
     tc, tr = grid_dims(len(survivors))
     ftw, fth = tile_size(fc, fr, width, grid_h)
     ttw, tth = tile_size(tc, tr, width, grid_h)
-    from_rects = layout_rects(fc, fr, len(alive), ftw, fth, header_h)
-    to_rects = layout_rects(tc, tr, len(survivors), ttw, tth, header_h)
+    from_rects = layout_rects(fc, fr, len(alive), ftw, fth, width, grid_h, header_h)
+    to_rects = layout_rects(tc, tr, len(survivors), ttw, tth, width, grid_h, header_h)
     to_by_id = {c.id: r for c, r in zip(survivors, to_rects)}
     tiles = []
     for clip, fr_rect in zip(alive, from_rects):
@@ -189,7 +198,7 @@ def _morph_tiles(alive: list[Clip], survivors: list[Clip],
         if to is None:
             cx, cy = fr_rect.x + fr_rect.w // 2, fr_rect.y + fr_rect.h // 2
             tiles.append(MorphTile(clip.id, fr_rect.x, fr_rect.y, fr_rect.w, fr_rect.h,
-                                   cx - 4, cy - 4, 8, 8, True))
+                                   cx - 8, cy - 4, 16, 9, True))
         else:
             tiles.append(MorphTile(clip.id, fr_rect.x, fr_rect.y, fr_rect.w, fr_rect.h,
                                    to.x, to.y, to.w, to.h, False))
@@ -220,27 +229,28 @@ def build_segment_graph(seg: Segment, width: int, grid_h: int,
                          fontsize: int) -> str:
     """Video-only graph for one static span. Returns the filter_complex script.
 
-    Tiles keep source aspect (letterboxed). Transitions between spans are
-    handled by morph spans (below), so no fades here. Audio is built
-    separately as one continuous mix, so joins never glitch it.
+    Tiles are exactly 16:9 like the sources, so plain scaling is aspect-exact
+    with no letterbox bars. Transitions between spans are handled by morph
+    spans (below). Audio is built separately as one continuous mix.
     """
     k = len(seg.active)
     cols, rows = grid_dims(k)
     tw, th = tile_size(cols, rows, width, grid_h)
+    rects = layout_rects(cols, rows, k, tw, th, width, grid_h, header_h)
     chains = []
     if k == 1:
-        # xstack needs >= 2 inputs; a lone survivor just fills the grid area.
-        chains.append(f"[0:v]scale={width}:{grid_h}:force_original_aspect_ratio=decrease,"
-                      f"pad={width}:{grid_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
-                      f"fps={fps},setpts=PTS-STARTPTS[vgrid]")
+        # xstack needs >= 2 inputs; position the lone tile via pad offsets.
+        r = rects[0]
+        chains.append(f"[0:v]scale={tw}:{th},setsar=1,"
+                      f"fps={fps},setpts=PTS-STARTPTS,"
+                      f"pad={width}:{grid_h}:{r.x}:{r.y - header_h}:black[vgrid]")
     else:
-        for i in range(k):
+        for i, r in enumerate(rects):
             chains.append(
-                f"[{i}:v]scale={tw}:{th}:force_original_aspect_ratio=decrease,"
-                f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                f"[{i}:v]scale={tw}:{th},setsar=1,"
                 f"fps={fps},setpts=PTS-STARTPTS[v{i}]")
         labels = "".join(f"[v{i}]" for i in range(k))
-        layout = layout_string(cols, rows, k, tw, th, header_h)
+        layout = "|".join(f"{r.x}_{r.y}" for r in rects)
         chains.append(
             f"{labels}xstack=inputs={k}:layout={layout}:fill=black[vgrid]")
     chains.append(f"[vgrid]{drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)}[vhead]")
