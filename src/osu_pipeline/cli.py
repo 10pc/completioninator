@@ -50,6 +50,12 @@ def _build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("compose", help="Compose uncomposited renders into a shrinking-grid video")
     c.add_argument("--max-clips", type=int, default=None, help="Keep longest N clips (default: config)")
     c.add_argument("--db", default=None, help="Override database path")
+
+    dl = sub.add_parser("daily", help="Nightly close-out: discover, render, compose")
+    dl.add_argument("--limit", type=int, default=None, help="Max renders (default: config)")
+    dl.add_argument("--max-clips", type=int, default=None, help="Keep longest N clips (default: config)")
+    dl.add_argument("--scan-root", default=None, help="Override replay directory")
+    dl.add_argument("--db", default=None, help="Override database path")
     return p
 
 
@@ -127,9 +133,9 @@ def _cmd_stop(args, cfg) -> int:
     return 0
 
 
-def _cmd_render(args, cfg) -> int:
-    db_path = Path(args.db) if args.db else cfg.database_path
-    limit = args.limit if args.limit is not None else cfg.render_limit_default
+def run_render(cfg, limit: int, beatmapset_id: int | None = None) -> tuple[int, dict]:
+    """Render loop shared by `render` and `daily`. Returns (exit code, stats)."""
+    db_path = cfg.database_path
     renderer = DanserRenderer(
         danser_home=cfg.danser_home,
         settings=cfg.danser_settings,
@@ -139,7 +145,7 @@ def _cmd_render(args, cfg) -> int:
     if not Path(renderer.cmd_prefix[0]).exists():
         print(f"danser not found: {renderer.cmd_prefix[0]} (PIPELINE_DANSER_HOME={cfg.danser_home})",
               file=sys.stderr)
-        return 2
+        return 2, {"rendered": 0, "failed": 0, "skipped_disk": 0, "retried": 0, "unrenderable": 0}
     cfg.working_dir.mkdir(parents=True, exist_ok=True)
     cfg.logs_dir.mkdir(parents=True, exist_ok=True)
     cfg.rendered_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +171,7 @@ def _cmd_render(args, cfg) -> int:
             if job is None:
                 break
             try:
-                _render_one(conn, cfg, renderer, job, override_set_id=args.beatmapset_id, stats=stats)
+                _render_one(conn, cfg, renderer, job, override_set_id=beatmapset_id, stats=stats)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:  # noqa: BLE001 - one bad job must never kill the batch
@@ -178,13 +184,27 @@ def _cmd_render(args, cfg) -> int:
                 print(f"[job-{job['id']}] FAILED (unexpected): {exc}")
     except KeyboardInterrupt:
         print("\ninterrupted; current job returns to pending on the next run")
-        return 130
+        return 130, stats
     finally:
         conn.close()
     print(f"rendered={stats['rendered']} failed={stats['failed']} "
           f"unrenderable={stats['unrenderable']} "
           f"retried={stats['retried']} skipped_disk={stats['skipped_disk']}")
-    return 0
+    return 0, stats
+
+
+def _with_db(cfg, db_path: Path):
+    """Copy of cfg pointing at another database (frozen dataclass)."""
+    import dataclasses
+
+    return dataclasses.replace(cfg, database_path=Path(db_path))
+
+
+def _cmd_render(args, cfg) -> int:
+    db_path = Path(args.db) if args.db else cfg.database_path
+    limit = args.limit if args.limit is not None else cfg.render_limit_default
+    rc, _ = run_render(_with_db(cfg, db_path), limit, args.beatmapset_id)
+    return rc
 
 
 def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result) -> tuple[str, bool]:
@@ -520,6 +540,37 @@ def _cmd_compose(args, cfg) -> int:
     return 0
 
 
+def _cmd_daily(args, cfg) -> int:
+    """Nightly close-out: discover -> render -> compose-if-new-renders."""
+    cfg = _with_db(cfg, Path(args.db) if args.db else cfg.database_path)
+    root = Path(args.scan_root) if args.scan_root else cfg.replays_dir
+
+    try:
+        scan = scan_replays(root, cfg.database_path, min_age_seconds=cfg.min_age_seconds)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"discover: found={scan['found']} new={scan['new']}")
+
+    rc, rstats = run_render(cfg, args.limit if args.limit is not None else cfg.render_limit_default)
+    summary = (f"daily: discovered new={scan['new']} rendered={rstats['rendered']} "
+               f"failed={rstats['failed']}")
+    if rc == 130:
+        print(summary + " composed=skipped (interrupted)")
+        return 130
+    if rc != 0:
+        return rc
+
+    composed = "skipped"
+    if rstats["rendered"] > 0:
+        crc = _cmd_compose(argparse.Namespace(db=str(cfg.database_path), max_clips=args.max_clips), cfg)
+        composed = "ok" if crc == 0 else "failed"
+        print(summary + f" composed={composed}")
+        return crc
+    print(summary + f" composed={composed}")
+    return 0
+
+
 def main(argv: list | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -546,6 +597,8 @@ def main(argv: list | None = None) -> int:
         return _cmd_progress(args, cfg)
     if args.command == "compose":
         return _cmd_compose(args, cfg)
+    if args.command == "daily":
+        return _cmd_daily(args, cfg)
     parser.print_help()
     return 2
 

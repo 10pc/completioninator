@@ -24,12 +24,20 @@ docker compose run --rm pipeline status
 ls data/rendered/*/
 ```
 
-Steady state is a host cron job (single worker, ~1 min/map at 720p30):
+Steady state is two host cron jobs (single worker, ~1 min/map at 720p30):
 
 ```bash
-# crontab -e — every 30 min, up to 25 renders per slot
-*/30 * * * * cd ~/completioninator && docker compose run --rm pipeline discover && docker compose run --rm pipeline render --limit 25
+# crontab -e
+# intra-day burn, every 30 min:
+*/30 * * * * cd ~/completioninator && docker compose run --rm pipeline render --limit 25
+# nightly close-out at 03:00 UTC (discover, render, compose if anything new):
+0 3 * * * cd ~/completioninator && docker compose run --rm pipeline daily --limit 100
 ```
+
+`daily` is just the three stages chained with one summary line
+(`discovered new=X rendered=Y failed=Z composed=ok|skipped|failed`); a day is
+composable whenever it has rendered clips, and stragglers roll forward, so
+midnight renders never break batching.
 
 Watch a batch and stop it mid-run:
 
