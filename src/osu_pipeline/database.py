@@ -153,22 +153,30 @@ def get_distinct_days(conn: sqlite3.Connection, limit: int = 10) -> list:
 
 # --- Render queue (Milestone 2) ---
 
-def claim_pending(conn: sqlite3.Connection) -> dict | None:
-    """Atomically claim the oldest pending replay. Returns the row, or None if empty."""
-    row = conn.execute(
-        "SELECT * FROM replays WHERE status = 'pending' ORDER BY day, id LIMIT 1"
-    ).fetchone()
-    if row is None:
-        return None
-    cur = conn.execute(
-        "UPDATE replays SET status = 'rendering', attempts = attempts + 1 "
-        "WHERE id = ? AND status = 'pending'",
-        (row["id"],),
-    )
-    conn.commit()
-    if cur.rowcount == 0:
-        return None  # lost a race; caller should retry
-    return dict(conn.execute("SELECT * FROM replays WHERE id = ?", (row["id"],)).fetchone())
+def claim_pending(conn: sqlite3.Connection, retries: int = 10) -> dict | None:
+    """Atomically claim the oldest pending replay. Returns the row, or None if empty.
+
+    Lost races (two workers selecting the same row) are retried internally,
+    so None reliably means the queue is empty — callers can stop on it.
+    """
+    import time
+
+    for _ in range(max(1, retries)):
+        row = conn.execute(
+            "SELECT * FROM replays WHERE status = 'pending' ORDER BY day, id LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        cur = conn.execute(
+            "UPDATE replays SET status = 'rendering', attempts = attempts + 1 "
+            "WHERE id = ? AND status = 'pending'",
+            (row["id"],),
+        )
+        conn.commit()
+        if cur.rowcount:
+            return dict(conn.execute("SELECT * FROM replays WHERE id = ?", (row["id"],)).fetchone())
+        time.sleep(0.05)
+    return None
 
 
 def reset_stale_rendering(conn: sqlite3.Connection) -> int:

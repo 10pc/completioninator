@@ -26,6 +26,7 @@ class PipelineConfig:
     render_timeout_seconds: int = 7200
     render_max_attempts: int = 3
     render_limit_default: int = 10
+    render_workers: int = 1
     disk_min_free_gb: float = 5.0
     working_dir: Path = Path("/data/working")
     rendered_dir: Path = Path("/data/rendered")
@@ -127,6 +128,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     instagram_token = os.environ.get("PIPELINE_INSTAGRAM_TOKEN")
     render_timeout = os.environ.get("PIPELINE_RENDER_TIMEOUT")
     render_max_attempts = os.environ.get("PIPELINE_RENDER_MAX_ATTEMPTS")
+    render_workers = os.environ.get("PIPELINE_RENDER_WORKERS")
 
     if cfg_file is not None:
         with open(cfg_file, "rb") as f:
@@ -152,6 +154,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         min_free_gb = float(min_free_gb if min_free_gb is not None else render.get("min_free_disk_gb", 5.0))
         render_timeout = int(render_timeout or render.get("timeout_seconds", 7200))
         render_max_attempts = int(render_max_attempts or render.get("max_attempts", 3))
+        render_workers = int(render_workers or render.get("workers", 1))
         limit_default = int(os.environ.get("PIPELINE_RENDER_LIMIT", str(render.get("limit_default", 10))))
         mirror = mirror or beatmaps.get("mirror", "https://mirror.hinamizawa.ai")
         beatmap_backend = beatmap_backend or beatmaps.get("backend", "hinamizawa")
@@ -203,6 +206,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
             "caption_template", "OSU! Completionist — {day} ({clips} maps)")
     else:
         render_timeout = int(render_timeout or 7200)
+        render_workers = int(render_workers or 1)
         danser_extra = tuple(a for a in (danser_extra or "").split(",") if a.strip())
         min_free_gb = float(min_free_gb or 5.0)
         if fallback_mirror is None:
@@ -240,6 +244,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         danser_extra_args=danser_extra,
         render_timeout_seconds=render_timeout,
         render_max_attempts=render_max_attempts,
+        render_workers=render_workers,
         render_limit_default=limit_default,
         disk_min_free_gb=min_free_gb,
         working_dir=Path(working or "/data/working"),

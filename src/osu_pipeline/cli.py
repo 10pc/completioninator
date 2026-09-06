@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +35,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("render", help="Render pending replays with danser")
     r.add_argument("--limit", type=int, default=None, help="Max jobs this run (default: config)")
+    r.add_argument("--workers", type=int, default=None, help="Parallel workers (default: config)")
     r.add_argument("--db", default=None, help="Override database path")
     r.add_argument("--beatmapset-id", type=int, default=None,
                    help="Skip mirror lookup; use this beatmapset for every job (acceptance testing)")
@@ -53,6 +56,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     dl = sub.add_parser("daily", help="Nightly close-out: discover, render, compose, upload")
     dl.add_argument("--limit", type=int, default=None, help="Max renders (default: config)")
+    dl.add_argument("--workers", type=int, default=None, help="Parallel workers (default: config)")
     dl.add_argument("--max-clips", type=int, default=None, help="Keep longest N clips (default: config)")
     dl.add_argument("--upload", action="store_true", help="Publish backlog to configured platforms")
     dl.add_argument("--scan-root", default=None, help="Override replay directory")
@@ -145,6 +149,10 @@ def stop_flag_path(cfg) -> Path:
     return Path(cfg.database_path).parent / "stop-render"
 
 
+def _fresh_stats() -> dict:
+    return {"rendered": 0, "failed": 0, "skipped_disk": 0, "retried": 0, "unrenderable": 0}
+
+
 def _cmd_stop(args, cfg) -> int:
     flag = stop_flag_path(cfg)
     flag.parent.mkdir(parents=True, exist_ok=True)
@@ -153,9 +161,51 @@ def _cmd_stop(args, cfg) -> int:
     return 0
 
 
-def run_render(cfg, limit: int, beatmapset_id: int | None = None) -> tuple[int, dict]:
+def _worker_loop(wid: int, cfg, renderer, beatmapset_id, state,
+                 stop_event: threading.Event, ensure_lock: threading.Lock) -> dict:
+    """One worker: own DB connection, claims until budget out / queue empty / told to stop."""
+    conn = database.connect(cfg.database_path)
+    local = _fresh_stats()
+    try:
+        while not stop_event.is_set():
+            with state["lock"]:
+                if state["remaining"] <= 0:
+                    break
+                state["remaining"] -= 1
+            if stop_flag_path(cfg).exists():
+                stop_flag_path(cfg).unlink(missing_ok=True)
+                print("stop requested; exiting after current job (none harmed)")
+                stop_event.set()
+                break
+            if _free_gb(cfg.rendered_dir) < cfg.disk_min_free_gb:
+                print(f"disk guard: low space; worker {wid} stopping run")
+                local["skipped_disk"] += 1
+                stop_event.set()
+                break
+            job = database.claim_pending(conn)
+            if job is None:
+                break
+            try:
+                _render_one(conn, cfg, renderer, job, override_set_id=beatmapset_id,
+                            stats=local, ensure_lock=ensure_lock)
+            except Exception as exc:  # noqa: BLE001 - one bad job must never kill the batch
+                log.exception("unexpected error on job-%s", job["id"])
+                try:
+                    database.mark_failed(conn, job["id"], f"unexpected: {exc}"[-500:])
+                    local["failed"] += 1
+                except Exception:
+                    log.exception("could not record failure for job-%s", job["id"])
+                print(f"[job-{job['id']}] FAILED (unexpected): {exc}")
+    finally:
+        conn.close()
+    return local
+
+
+def run_render(cfg, limit: int, beatmapset_id: int | None = None,
+               workers: int | None = None) -> tuple[int, dict]:
     """Render loop shared by `render` and `daily`. Returns (exit code, stats)."""
     db_path = cfg.database_path
+    n_workers = max(1, workers or cfg.render_workers)
     renderer = DanserRenderer(
         danser_home=cfg.danser_home,
         settings=cfg.danser_settings,
@@ -165,52 +215,62 @@ def run_render(cfg, limit: int, beatmapset_id: int | None = None) -> tuple[int, 
     if not Path(renderer.cmd_prefix[0]).exists():
         print(f"danser not found: {renderer.cmd_prefix[0]} (PIPELINE_DANSER_HOME={cfg.danser_home})",
               file=sys.stderr)
-        return 2, {"rendered": 0, "failed": 0, "skipped_disk": 0, "retried": 0, "unrenderable": 0}
+        return 2, _fresh_stats()
     cfg.working_dir.mkdir(parents=True, exist_ok=True)
     cfg.logs_dir.mkdir(parents=True, exist_ok=True)
     cfg.rendered_dir.mkdir(parents=True, exist_ok=True)
 
     database.init_db(db_path)
     conn = database.connect(db_path)
-    stats = {"rendered": 0, "failed": 0, "skipped_disk": 0, "retried": 0, "unrenderable": 0}
     try:
         stale = database.reset_stale_rendering(conn)
         if stale:
             print(f"requeued {stale} stale rendering job(s)")
-        for _ in range(limit):
-            if stop_flag_path(cfg).exists():
-                stop_flag_path(cfg).unlink(missing_ok=True)
-                print("stop requested; exiting after current job (none harmed)")
-                break
-            free = _free_gb(cfg.rendered_dir)
-            if free < cfg.disk_min_free_gb:
-                print(f"disk guard: {free:.1f}GB free < {cfg.disk_min_free_gb}GB minimum; stopping run")
-                stats["skipped_disk"] += 1
-                break
-            job = database.claim_pending(conn)
-            if job is None:
-                break
-            try:
-                _render_one(conn, cfg, renderer, job, override_set_id=beatmapset_id, stats=stats)
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:  # noqa: BLE001 - one bad job must never kill the batch
-                log.exception("unexpected error on job-%s", job["id"])
-                try:
-                    database.mark_failed(conn, job["id"], f"unexpected: {exc}"[-500:])
-                    stats["failed"] += 1
-                except Exception:
-                    log.exception("could not record failure for job-%s", job["id"])
-                print(f"[job-{job['id']}] FAILED (unexpected): {exc}")
-    except KeyboardInterrupt:
-        print("\ninterrupted; current job returns to pending on the next run")
-        return 130, stats
     finally:
         conn.close()
+
+    state = {"remaining": max(0, limit), "lock": threading.Lock()}
+    stop_event = threading.Event()
+    ensure_lock = threading.Lock()
+    if n_workers == 1:
+        try:
+            stats = _worker_loop(0, cfg, renderer, beatmapset_id, state, stop_event, ensure_lock)
+        except KeyboardInterrupt:
+            print("\ninterrupted; current job returns to pending on the next run")
+            return 130, _fresh_stats()
+        print(f"rendered={stats['rendered']} failed={stats['failed']} "
+              f"unrenderable={stats['unrenderable']} "
+              f"retried={stats['retried']} skipped_disk={stats['skipped_disk']}")
+        return 0, stats
+    print(f"rendering with {n_workers} workers (limit {limit})")
+    results: dict = {}
+    threads = [threading.Thread(target=lambda i=i: results.setdefault(
+        i, _worker_loop(i, cfg, renderer, beatmapset_id, state, stop_event, ensure_lock)),
+        name=f"render-{i}", daemon=True) for i in range(n_workers)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        print("\ninterrupted; current jobs return to pending on the next run")
+        stop_event.set()
+        for t in threads:
+            t.join()
+        return 130, _merge_stats(results)
+    stats = _merge_stats(results)
     print(f"rendered={stats['rendered']} failed={stats['failed']} "
           f"unrenderable={stats['unrenderable']} "
           f"retried={stats['retried']} skipped_disk={stats['skipped_disk']}")
     return 0, stats
+
+
+def _merge_stats(results: dict) -> dict:
+    merged = _fresh_stats()
+    for local in results.values():
+        for k in merged:
+            merged[k] += local.get(k, 0)
+    return merged
 
 
 def _with_db(cfg, db_path: Path):
@@ -223,7 +283,8 @@ def _with_db(cfg, db_path: Path):
 def _cmd_render(args, cfg) -> int:
     db_path = Path(args.db) if args.db else cfg.database_path
     limit = args.limit if args.limit is not None else cfg.render_limit_default
-    rc, _ = run_render(_with_db(cfg, db_path), limit, args.beatmapset_id)
+    rc, _ = run_render(_with_db(cfg, db_path), limit, args.beatmapset_id,
+                       args.workers if args.workers is not None else cfg.render_workers)
     return rc
 
 
@@ -259,7 +320,8 @@ def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result)
     return result.error or "render failed", False
 
 
-def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id, stats: dict) -> None:
+def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
+                stats: dict, ensure_lock: threading.Lock | None = None) -> None:
     jid = job["id"]
     tag = f"job-{jid}"
     if job["attempts"] > cfg.render_max_attempts:
@@ -289,25 +351,30 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
         database.set_beatmap(conn, jid, bhash, job.get("beatmapset_id"))
 
     set_id = job.get("beatmapset_id")
-    try:
-        set_id, _osz = beatmaps.ensure_beatmap(
-            cfg.beatmap_mirror, bhash, cfg.songs_dir, override_set_id=override_set_id,
-            osu_client_id=cfg.osu_client_id, osu_client_secret=cfg.osu_client_secret,
-            backend=cfg.beatmap_backend,
-            fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
-        )
-        database.set_beatmap(conn, jid, bhash, set_id)
-    except beatmaps.BeatmapError as exc:
-        if exc.transient:
-            # Mirror blip (503/pressure/timeout): back to pending, attempts cap bounds it.
-            database.requeue_one(conn, jid, f"transient: {exc}")
-            stats["retried"] += 1
-            print(f"[{tag}] transient beatmap failure, requeued: {exc}")
+    # Serialized across workers: concurrent downloads of one set corrupt the
+    # .part file, and concurrent danser runs contend on its internal DB.
+    # Renders (the minutes-long part) stay parallel; only this ensure phase
+    # (seconds) is serialized.
+    with ensure_lock if ensure_lock is not None else contextlib.nullcontext():
+        try:
+            set_id, _osz = beatmaps.ensure_beatmap(
+                cfg.beatmap_mirror, bhash, cfg.songs_dir, override_set_id=override_set_id,
+                osu_client_id=cfg.osu_client_id, osu_client_secret=cfg.osu_client_secret,
+                backend=cfg.beatmap_backend,
+                fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
+            )
+            database.set_beatmap(conn, jid, bhash, set_id)
+        except beatmaps.BeatmapError as exc:
+            if exc.transient:
+                # Mirror blip (503/pressure/timeout): back to pending, attempts cap bounds it.
+                database.requeue_one(conn, jid, f"transient: {exc}")
+                stats["retried"] += 1
+                print(f"[{tag}] transient beatmap failure, requeued: {exc}")
+                return
+            database.mark_failed(conn, jid, str(exc))
+            stats["failed"] += 1
+            print(f"[{tag}] beatmap unavailable: {exc}")
             return
-        database.mark_failed(conn, jid, str(exc))
-        stats["failed"] += 1
-        print(f"[{tag}] beatmap unavailable: {exc}")
-        return
 
     result = renderer.render(scratch, tag)
     log_file = cfg.logs_dir / f"{tag}.log"
@@ -572,7 +639,8 @@ def _cmd_daily(args, cfg) -> int:
         return 2
     print(f"discover: found={scan['found']} new={scan['new']}")
 
-    rc, rstats = run_render(cfg, args.limit if args.limit is not None else cfg.render_limit_default)
+    rc, rstats = run_render(cfg, args.limit if args.limit is not None else cfg.render_limit_default,
+                            workers=args.workers if args.workers is not None else cfg.render_workers)
     summary = (f"daily: discovered new={scan['new']} rendered={rstats['rendered']} "
                f"failed={rstats['failed']}")
     if rc == 130:

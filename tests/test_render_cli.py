@@ -329,3 +329,39 @@ def test_render_disk_guard_stops_run(tmp_path: Path, monkeypatch, capsys):
         assert database.get_counts(conn)["pending"] == 1  # nothing claimed
     finally:
         conn.close()
+
+
+def test_three_workers_render_each_job_once(tmp_path: Path, monkeypatch, capsys):
+    import osu_pipeline.cli as cli_mod
+
+    root = tmp_path / "replays"
+    root.mkdir()
+    db = tmp_path / "p.sqlite"
+    for i in range(9):
+        (root / f"{i}.osr").write_bytes(b"fake-replay")
+        _seed_row(db, path=f"{i}.osr", sha256=f"s{i}")
+    cfg = _write_cfg(tmp_path)
+    stub = _stub_renderer(tmp_path)
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: stub)
+    monkeypatch.setattr(
+        beatmaps, "ensure_beatmap", lambda *a, **k: (123, tmp_path / "songs" / "123.osz"))
+
+    real_claim = database.claim_pending
+
+    def _counting_claim(conn):
+        job = real_claim(conn)
+        if job is not None:
+            import time as _t
+
+            _t.sleep(0.05)  # widen the race window on purpose
+        return job
+
+    monkeypatch.setattr(database, "claim_pending", _counting_claim)
+    assert main(["--config", str(cfg), "render", "--limit", "9", "--workers", "3"]) == 0
+    assert "rendering with 3 workers" in capsys.readouterr().out
+    conn = database.connect(db)
+    try:
+        counts = database.get_counts(conn)
+        assert counts["rendered"] == 9 and counts["pending"] == 0
+    finally:
+        conn.close()

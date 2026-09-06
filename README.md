@@ -30,7 +30,7 @@ ls data/rendered/*/
 docker compose run --rm pipeline daily --limit 100
 ```
 
-Steady state is two host cron jobs (single worker, ~1 min/map at 720p30):
+Steady state is two host cron jobs (3 render workers, ~1 min/map at 720p30):
 
 ```bash
 # crontab -e
@@ -47,6 +47,11 @@ it has rendered clips, and stragglers roll forward, so midnight renders
 never break batching. `--upload` publishes the latest daily missing a
 success row per configured platform (retrying yesterday's failures) and
 skips platforms without credentials.
+
+Rendering runs N parallel workers (`--workers`, default from `[render]
+workers`, currently 3): claims are atomic so no replay renders twice, and
+the beatmap fetch phase is serialized while the minutes-long encodes stay
+parallel. Drop to `--workers 1` if danser ever acts up under concurrency.
 
 Watch a batch and stop it mid-run:
 
