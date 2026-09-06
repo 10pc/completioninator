@@ -21,6 +21,9 @@ timeout_seconds = 7200
 max_attempts = 3
 limit_default = 10
 workers = 3
+# Claims older than this (minutes) count as crashed and are requeued.
+# Must exceed the longest single render; NULL/legacy claims always reset.
+stale_after_minutes = 180
 min_free_disk_gb = 5.0
 
 [beatmaps]
@@ -55,6 +58,10 @@ crf = 23
 compose_timeout = 1800
 # glide seconds per grid resize; tiny gaps between finishes degrade to cuts
 morph_seconds = 1.0
+# finish times are floored to this grid (seconds): near-identical durations
+# collapse into one boundary instead of sliver segments ffmpeg rejects.
+# Trims at most this much tail per clip; 0 disables (exact, fragile).
+segment_quant = 0.5
 # outro: fades content out, shows completion stats, fades to black
 outro_seconds = 6.0
 outro_fontsize = 72

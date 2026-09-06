@@ -71,13 +71,27 @@ def test_plan_timeline_static_and_morphs():
 
 
 def test_plan_timeline_tiny_gap_degrades_to_cut():
+    # With exact boundaries, a 0.1s gap is a hard cut, not a morph.
     clips = [_clip(1, 100.0), _clip(2, 30.0), _clip(3, 30.1)]
-    spans = compositor.plan_timeline(clips, morph_s=1.0, min_morph=0.25)
+    spans = compositor.plan_timeline(clips, morph_s=1.0, min_morph=0.25, quant=0)
     kinds = [type(s).__name__ for s in spans]
-    # the 0.1s gap between the 30.0 and 30.1 finishes is a hard cut, not a morph
     assert kinds == ["Segment", "MorphSpan", "Segment", "Segment"], kinds
     total = sum(s.length for s in spans)
     assert abs(total - 100.0) < 1e-9
+
+
+def test_plan_timeline_quantize_collapses_float_dust():
+    clips = [_clip(1, 100.0), _clip(2, 30.0), _clip(3, 30.000001)]
+    spans = compositor.plan_timeline(clips, morph_s=1.0, quant=0.5)
+    kinds = [type(s).__name__ for s in spans]
+    assert kinds == ["Segment", "MorphSpan", "Segment"], kinds
+    for s in spans:
+        assert s.length >= 0.5  # no sliver ffmpeg would reject
+    total = sum(s.length for s in spans)
+    assert abs(total - 100.0) < 1e-9
+    # quant=0 keeps exact boundaries (fragile, opt-in)
+    exact = compositor.plan_timeline(clips, morph_s=1.0, quant=0)
+    assert len(exact) > len(spans)
 
 
 def test_plan_timeline_single_clip_no_morph():

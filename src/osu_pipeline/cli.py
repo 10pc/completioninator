@@ -231,7 +231,7 @@ def run_render(cfg, limit: int, beatmapset_id: int | None = None,
     database.init_db(db_path)
     conn = database.connect(db_path)
     try:
-        stale = database.reset_stale_rendering(conn)
+        stale = database.reset_stale_rendering(conn, cfg.stale_after_minutes)
         if stale:
             print(f"requeued {stale} stale rendering job(s)")
     finally:
@@ -403,6 +403,14 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
             stats["unrenderable"] += 1
             print(f"[{tag}] UNRENDERABLE: {cause}")
             return
+        if "beatmap not found" in cause and job.get("attempts", 99) <= 1:
+            # First miss is expected whenever a parallel worker's import raced
+            # (now that danser.db is shared and persistent): retry once, park
+            # only on repeat. Attempts cap still bounds true orphans.
+            database.requeue_one(conn, jid, f"transient: {cause}")
+            stats["retried"] += 1
+            print(f"[{tag}] beatmap not found on first try, requeued: {cause}")
+            return
         database.mark_failed(conn, jid, cause[-500:])
         stats["failed"] += 1
         print(f"[{tag}] FAILED: {cause}")
@@ -551,7 +559,8 @@ def _cmd_compose(args, cfg) -> int:
     grid_h = cfg.video_height - cfg.header_height
     timeline = compositor.plan_timeline(kept, morph_s=cfg.morph_seconds,
                                         width=cfg.video_width, grid_h=grid_h,
-                                        header_h=cfg.header_height)
+                                        header_h=cfg.header_height,
+                                        quant=cfg.segment_quant)
     outro_dur = cfg.outro_seconds if comp_stats else 0.0
     n_seg = sum(isinstance(s, compositor.Segment) for s in timeline)
     n_morph = len(timeline) - n_seg

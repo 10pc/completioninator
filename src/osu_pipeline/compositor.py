@@ -146,24 +146,42 @@ class MorphSpan:
 
 def plan_timeline(clips: list[Clip], morph_s: float = 1.0,
                   min_morph: float = 0.25, width: int = 1920,
-                  grid_h: int = 1000, header_h: int = 80) -> list:
+                  grid_h: int = 1000, header_h: int = 80,
+                  quant: float = 0.5) -> list:
     """Static grid spans glued by animated morphs.
 
     Each morph occupies a finish time's final `morph_s` seconds, so dying
     tiles play out while shrinking into their survivors' layout. Windows too
     small for `min_morph` degrade to hard cuts. Returns Segment/MorphSpan in
     time order; durations always tile exactly (no gaps, no overlaps).
+
+    Finish times are floored to a `quant` grid (0 disables): near-identical
+    durations collapse into one boundary instead of producing sliver segments
+    that ffmpeg rejects (`-t 0.000`), at the cost of trimming at most `quant`
+    seconds of tail per clip. Flooring (never rounding up) guarantees every
+    boundary stays within real content, so inputs can never hit EOF mid-span.
     """
+    import math
+
+    def _floor(d: float) -> float:
+        return math.floor(d / quant) * quant if quant and quant > 0 else d
+
     by_position = sorted(clips, key=lambda c: (c.day or "", c.id))
+    # Compare floored durations everywhere: a clip ending at real 30.4 in a
+    # 30.0 bucket is dead after 30.0 (its 0.4s tail is trimmed, never EOF).
+    fdur = {c.id: _floor(c.duration) for c in clips}
     ends: list[float] = []
     for c in sorted(clips, key=lambda c: c.duration):
-        if not ends or c.duration > ends[-1]:
-            ends.append(c.duration)
+        floored = fdur[c.id]
+        if not ends or floored > ends[-1]:
+            ends.append(floored)
     spans: list = []
     cursor = 0.0
     for end in ends:
-        alive_here = [c for c in by_position if c.duration > cursor]
-        survivors = [c for c in by_position if c.duration > end]
+        if end <= cursor:
+            continue
+        alive_here = [c for c in by_position if fdur[c.id] > cursor]
+        survivors = [c for c in by_position if fdur[c.id] > end]
         window = min(morph_s, end - cursor)
         if survivors and window >= min_morph:
             m_start = end - window
@@ -176,9 +194,9 @@ def plan_timeline(clips: list[Clip], morph_s: float = 1.0,
             if end > cursor and alive_here:
                 spans.append(Segment(start=cursor, end=end, active=list(alive_here)))
         cursor = end
-    tail = [c for c in by_position if c.duration > cursor]
+    tail = [c for c in by_position if fdur[c.id] > cursor]
     if tail:
-        spans.append(Segment(start=cursor, end=max(c.duration for c in tail), active=tail))
+        spans.append(Segment(start=cursor, end=max(fdur[c.id] for c in tail), active=tail))
     return spans
 
 

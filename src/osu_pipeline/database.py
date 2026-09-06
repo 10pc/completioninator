@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCHEMA = """
@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS replays (
     rendered_at TEXT,
     error TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT,
     UNIQUE(path, sha256)
 );
 CREATE INDEX IF NOT EXISTS idx_replays_status_day ON replays(status, day);
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS daily_clips (
 MIGRATIONS = [
     ("replays", "ALTER TABLE replays ADD COLUMN beatmap_hash TEXT"),
     ("replays", "ALTER TABLE replays ADD COLUMN beatmapset_id INTEGER"),
+    ("replays", "ALTER TABLE replays ADD COLUMN claimed_at TEXT"),
     ("daily", "ALTER TABLE daily ADD COLUMN passed TEXT"),
     ("daily", "ALTER TABLE daily ADD COLUMN left TEXT"),
     ("daily", "ALTER TABLE daily ADD COLUMN pct TEXT"),
@@ -163,6 +165,7 @@ def claim_pending(conn: sqlite3.Connection, retries: int = 10) -> dict | None:
 
     Lost races (two workers selecting the same row) are retried internally,
     so None reliably means the queue is empty — callers can stop on it.
+    Stamps claimed_at so a later run can tell live claims from stale ones.
     """
     import time
 
@@ -173,9 +176,9 @@ def claim_pending(conn: sqlite3.Connection, retries: int = 10) -> dict | None:
         if row is None:
             return None
         cur = conn.execute(
-            "UPDATE replays SET status = 'rendering', attempts = attempts + 1 "
-            "WHERE id = ? AND status = 'pending'",
-            (row["id"],),
+            "UPDATE replays SET status = 'rendering', attempts = attempts + 1, "
+            "claimed_at = ? WHERE id = ? AND status = 'pending'",
+            (_utcnow_iso(), row["id"]),
         )
         conn.commit()
         if cur.rowcount:
@@ -184,9 +187,19 @@ def claim_pending(conn: sqlite3.Connection, retries: int = 10) -> dict | None:
     return None
 
 
-def reset_stale_rendering(conn: sqlite3.Connection) -> int:
-    """Return interrupted `rendering` jobs to `pending` (crash recovery on startup)."""
-    cur = conn.execute("UPDATE replays SET status = 'pending' WHERE status = 'rendering'")
+def reset_stale_rendering(conn: sqlite3.Connection, older_than_minutes: float = 180) -> int:
+    """Return interrupted `rendering` jobs to `pending` — but only ones whose
+    claim is older than the cutoff (or never stamped, i.e. pre-migration rows).
+
+    A blind reset double-renders jobs another live worker/container started
+    minutes ago; the age gate means only genuinely dead claims come back.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=older_than_minutes)).isoformat()
+    cur = conn.execute(
+        "UPDATE replays SET status = 'pending' WHERE status = 'rendering' "
+        "AND (claimed_at IS NULL OR claimed_at < ?)",
+        (cutoff,),
+    )
     conn.commit()
     return cur.rowcount
 

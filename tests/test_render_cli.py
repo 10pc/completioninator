@@ -365,3 +365,47 @@ def test_three_workers_render_each_job_once(tmp_path: Path, monkeypatch, capsys)
         assert counts["rendered"] == 9 and counts["pending"] == 0
     finally:
         conn.close()
+
+
+def _beatmap_miss_setup(tmp_path: Path, monkeypatch, bhash="deadbeef"):
+    import osu_pipeline.cli as cli_mod
+    from osu_pipeline.renderer import RenderResult
+
+    (tmp_path / "replays").mkdir(exist_ok=True)
+    ((tmp_path / "replays") / "play.osr").write_bytes(b"fake-replay")
+    db = tmp_path / "p.sqlite"
+    _seed_row(db, beatmap_hash=bhash)
+    cfg = _write_cfg(tmp_path)
+
+    class DeadRenderer:
+        cmd_prefix = [sys.executable]
+
+        def render(self, replay_osr, job_stem):
+            return RenderResult(False, None, "x\nBeatmap not found, closing...\n", error="exit 0")
+
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: DeadRenderer())
+    monkeypatch.setattr(
+        beatmaps, "ensure_beatmap", lambda *a, **k: (2353587, tmp_path / "songs" / "x.osz"))
+    return db, cfg
+
+
+def test_first_beatmap_miss_requeues_repeat_parks(tmp_path: Path, monkeypatch, capsys):
+    db, cfg = _beatmap_miss_setup(tmp_path, monkeypatch)
+    # hash present on disk: first miss requeues (likely import race)...
+    monkeypatch.setattr(beatmaps, "set_checksums", lambda *a, **k: {"deadbeef"})
+    assert main(["--config", str(cfg), "render", "--limit", "1"]) == 0
+    assert "requeued" in capsys.readouterr().out
+    conn = database.connect(db)
+    try:
+        assert conn.execute("SELECT status FROM replays").fetchone()["status"] == "pending"
+    finally:
+        conn.close()
+    # ...second consecutive miss parks it as failed (diagnosis: retry may help)
+    assert main(["--config", str(cfg), "render", "--limit", "1"]) == 0
+    conn = database.connect(db)
+    try:
+        row = conn.execute("SELECT status, error FROM replays").fetchone()
+        assert row["status"] == "failed"
+        assert "retry may help" in row["error"]
+    finally:
+        conn.close()

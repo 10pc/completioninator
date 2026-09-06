@@ -28,6 +28,7 @@ class PipelineConfig:
     render_max_attempts: int = 3
     render_limit_default: int = 10
     render_workers: int = 1
+    stale_after_minutes: float = 180
     disk_min_free_gb: float = 5.0
     working_dir: Path = Path("/data/working")
     rendered_dir: Path = Path("/data/rendered")
@@ -52,6 +53,7 @@ class PipelineConfig:
     video_crf: int = 23
     compose_timeout: int = 1800
     morph_seconds: float = 1.0
+    segment_quant: float = 0.5
     outro_seconds: float = 6.0
     outro_fontsize: int = 72
     outro_fontsize_sub: int = 54
@@ -159,6 +161,9 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         render_timeout = int(render_timeout or render.get("timeout_seconds", 7200))
         render_max_attempts = int(render_max_attempts or render.get("max_attempts", 3))
         render_workers = int(render_workers or render.get("workers", 1))
+        stale_after_minutes = float(
+            os.environ.get("PIPELINE_STALE_AFTER_MINUTES",
+                           render.get("stale_after_minutes", 180)))
         limit_default = int(os.environ.get("PIPELINE_RENDER_LIMIT", str(render.get("limit_default", 10))))
         mirror = mirror or beatmaps.get("mirror", "https://mirror.hinamizawa.ai")
         beatmap_backend = beatmap_backend or beatmaps.get("backend", "hinamizawa")
@@ -183,6 +188,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         compose_timeout = int(video.get("compose_timeout", 1800))
         morph_seconds = float(os.environ.get("PIPELINE_MORPH_SECONDS",
                                              video.get("morph_seconds", 1.0)))
+        segment_quant = float(os.environ.get("PIPELINE_SEGMENT_QUANT",
+                                             video.get("segment_quant", 0.5)))
         outro_seconds = float(video.get("outro_seconds", 6.0))
         outro_fontsize = int(video.get("outro_fontsize", 72))
         outro_fontsize_sub = int(video.get("outro_fontsize_sub", 54))
@@ -216,6 +223,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     else:
         render_timeout = int(render_timeout or 7200)
         render_workers = int(render_workers or 1)
+        stale_after_minutes = float(os.environ.get("PIPELINE_STALE_AFTER_MINUTES", 180))
         danser_extra = tuple(a for a in (danser_extra or "").split(",") if a.strip())
         min_free_gb = float(min_free_gb or 5.0)
         if fallback_mirror is None:
@@ -230,6 +238,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         max_clips = int(max_clips or 12)
         video_preset, video_crf, compose_timeout = "veryfast", 23, 1800
         morph_seconds = float(os.environ.get("PIPELINE_MORPH_SECONDS", 1.0))
+        _sq = os.environ.get("PIPELINE_SEGMENT_QUANT")
+        segment_quant = float(_sq) if _sq is not None else 0.5
         outro_seconds, outro_fontsize, outro_fontsize_sub = 6.0, 72, 54
         completion_profile_url = "https://osucomplete.org/u/19333530/osu-ranked"
         completion_passed = os.environ.get("PIPELINE_COMPLETION_PASSED", "")
@@ -257,6 +267,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         render_timeout_seconds=render_timeout,
         render_max_attempts=render_max_attempts,
         render_workers=render_workers,
+        stale_after_minutes=stale_after_minutes,
         render_limit_default=limit_default,
         disk_min_free_gb=min_free_gb,
         working_dir=Path(working or "/data/working"),
@@ -279,6 +290,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         video_crf=video_crf,
         compose_timeout=compose_timeout,
         morph_seconds=morph_seconds,
+        segment_quant=segment_quant,
         outro_seconds=outro_seconds,
         outro_fontsize=outro_fontsize,
         outro_fontsize_sub=outro_fontsize_sub,

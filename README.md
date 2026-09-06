@@ -93,6 +93,13 @@ Each job writes its full danser log to `/data/logs/job-<id>.log` (console shows
 the tail only). Rendering refuses to start below `min_free_disk_gb` free space
 (default 5GB) so a full disk can't corrupt the queue.
 
+Danser's own map database persists at `/data/db/danser.db` (symlinked into
+place on every container start), so the Songs import happens once, not per
+job. A `rendering` claim older than `stale_after_minutes` (default 180)
+counts as crashed and is requeued — overlapping runs can no longer
+double-render a live job. First-time `Beatmap not found` failures retry
+once automatically (parallel-import races); only repeats park.
+
 Optional: skip danser's per-job GitHub update check (saves ~4s/job and removes
 a network dependency). First verify the flag exists in this build:
 

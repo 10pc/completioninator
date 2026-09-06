@@ -97,7 +97,7 @@ def test_claim_reset_mark_cycle(tmp_path: Path):
         job = database.claim_pending(conn)
         assert job["status"] == "rendering" and job["attempts"] == 1
         assert database.claim_pending(conn) is None  # nothing pending now
-        assert database.reset_stale_rendering(conn) == 1  # crash recovery
+        assert database.reset_stale_rendering(conn, older_than_minutes=0) == 1  # crash recovery
         job2 = database.claim_pending(conn)
         assert job2["attempts"] == 2
         database.mark_rendered(conn, job2["id"], "/r/1.mp4")
@@ -231,3 +231,30 @@ def test_repo_pipeline_look():
     assert data["Playfield"]["SeizureWarning"]["Enabled"] is False
     cfg = load_config(repo / "config" / "config.toml")
     assert cfg.danser_skin == "abnormal"
+
+
+def test_claim_stamps_and_stale_gate(tmp_path: Path):
+    from datetime import datetime, timedelta, timezone
+
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    try:
+        database.insert_replay(
+            conn, path="a.osr", sha256="s", size=1, mtime_ns=1,
+            played_at="2026-09-06T00:00:00+00:00", day="2026-09-06")
+        conn.commit()
+        job = database.claim_pending(conn)
+        assert job["claimed_at"]  # stamped
+        # fresh claim survives the age gate; ancient/legacy ones reset
+        assert database.reset_stale_rendering(conn, older_than_minutes=180) == 0
+        old = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+        conn.execute("UPDATE replays SET claimed_at = ? WHERE id = ?", (old, job["id"]))
+        conn.commit()
+        assert database.reset_stale_rendering(conn, older_than_minutes=180) == 1
+        conn.execute("UPDATE replays SET claimed_at = NULL, status = 'rendering' WHERE id = ?",
+                     (job["id"],))
+        conn.commit()
+        assert database.reset_stale_rendering(conn, older_than_minutes=180) == 1
+    finally:
+        conn.close()
