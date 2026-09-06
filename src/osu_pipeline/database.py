@@ -103,7 +103,7 @@ def get_counts(conn: sqlite3.Connection) -> dict:
     counts = {r["status"]: r["n"] for r in rows}
     total = conn.execute("SELECT COUNT(*) AS n FROM replays").fetchone()["n"]
     counts["discovered"] = total
-    for s in ("pending", "rendering", "rendered", "failed"):
+    for s in ("pending", "rendering", "rendered", "failed", "unrenderable"):
         counts.setdefault(s, 0)
     return counts
 
@@ -198,5 +198,14 @@ def mark_rendered(conn: sqlite3.Connection, replay_id: int, render_path: str) ->
 def mark_failed(conn: sqlite3.Connection, replay_id: int, error: str) -> None:
     conn.execute(
         "UPDATE replays SET status = 'failed', error = ? WHERE id = ?", (error, replay_id)
+    )
+    conn.commit()
+
+
+def mark_unrenderable(conn: sqlite3.Connection, replay_id: int, error: str) -> None:
+    """Terminal skip: never claimed, never requeued (e.g. map updated since play)."""
+    conn.execute(
+        "UPDATE replays SET status = 'unrenderable', error = ? WHERE id = ?",
+        (error, replay_id),
     )
     conn.commit()

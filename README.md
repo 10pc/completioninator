@@ -92,11 +92,12 @@ the full danser output):
 
 - `transient: …` (mirror 503/pressure, timeouts) — job goes back to
   `pending` by itself; the attempts cap still bounds endless retries.
-- `no_beatmap: …` — hash found nowhere (deleted map?); needs the original
-  `.osz` from the local Songs folder.
+- `no_beatmap: …` — hash found on no mirror (deleted map?). No local
+  sourcing exists by design — everything is remote — so these stay parked
+  until the map reappears upstream.
 - `danser: beatmap not found … updated since play` — the set downloaded
-  fine but the replay's hash is absent from its current version; same
-  remedy as above.
+  fine but the replay's hash is absent from its current version (mirrors
+  only host the latest); parked as `unrenderable`, same remote-only rule.
 
 Rules: never write to `/replays`, only `.osr` is processed (never `.part`),
 day boundary is UTC midnight, identity is `(path, sha256)`.

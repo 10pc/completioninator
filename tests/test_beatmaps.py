@@ -76,6 +76,11 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/v1/hinai/d/503":
             self.send_response(503)
             self.end_headers()
+        elif self.path == "/d/78":
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(FAKE_OSZ)))
+            self.end_headers()
+            self.wfile.write(FAKE_OSZ)
         elif self.path == "/d/42":
             self.send_response(200)
             self.send_header("Content-Length", str(len(FAKE_OSZ)))
@@ -145,11 +150,12 @@ def test_ensure_beatmap_falls_back_to_official(mirror, tmp_path: Path):
     TOKEN_HITS.clear()
     beatmaps._token_cache.clear()
     # "missing"*5 hits no mirror tier, resolves via official stub -> set 77,
-    # but set 77 has no /d/ route on the stub -> download error surfaces.
+    # but set 77 has no download route on the stub -> download error surfaces.
     with pytest.raises(beatmaps.BeatmapError):
         beatmaps.ensure_beatmap(
             mirror, KNOWN_OFFICIAL_MD5, tmp_path,
-            osu_client_id="cid", osu_client_secret="secret", osu_base=mirror)
+            osu_client_id="cid", osu_client_secret="secret", osu_base=mirror,
+            fallback_mirror=mirror, fallback_backend="mino")
 
 
 def test_requeue_failed(tmp_path: Path):
@@ -183,7 +189,26 @@ def test_hinamizawa_end_to_end(mirror, tmp_path: Path):
     # cache hit on repeat
     assert beatmaps.ensure_beatmap(mirror, HINAI_MD5, songs, backend="hinamizawa")[0] == 66
     with pytest.raises(beatmaps.BeatmapError, match="no_beatmap"):
-        beatmaps.ensure_beatmap(mirror, "nope" * 8, songs, backend="hinamizawa")
+        beatmaps.ensure_beatmap(mirror, "nope" * 8, songs, backend="hinamizawa",
+                                fallback_mirror=None)
+
+
+def test_lookup_falls_back_to_second_mirror(mirror, tmp_path: Path):
+    # MD5 is only in the mino-shaped search payload; hinamizawa md5 route 404s.
+    # Download of set 42 then also falls back (hinai route missing, mino serves).
+    songs = tmp_path / "songs"
+    set_id, path = beatmaps.ensure_beatmap(
+        mirror, MD5, songs, backend="hinamizawa",
+        fallback_mirror=mirror, fallback_backend="mino")
+    assert set_id == 42 and path.exists()
+
+
+def test_download_falls_back_to_second_mirror(mirror, tmp_path: Path):
+    songs = tmp_path / "songs"
+    set_id, path = beatmaps.ensure_beatmap(
+        mirror, None, songs, override_set_id=78, backend="hinamizawa",
+        fallback_mirror=mirror, fallback_backend="mino")
+    assert set_id == 78 and path.exists()
 
 
 def test_transient_classification():
@@ -201,6 +226,7 @@ def test_transient_classification():
 def test_503_download_is_transient(mirror, tmp_path: Path):
     # stub has no md5 route for this hash; resolve via override to reach download
     with pytest.raises(beatmaps.BeatmapError) as ei:
-        beatmaps.ensure_beatmap(mirror, None, tmp_path, override_set_id=503, backend="hinamizawa")
+        beatmaps.ensure_beatmap(mirror, None, tmp_path, override_set_id=503, backend="hinamizawa",
+                                fallback_mirror=mirror, fallback_backend="mino")
     assert ei.value.transient is True
     assert "503" in str(ei.value)

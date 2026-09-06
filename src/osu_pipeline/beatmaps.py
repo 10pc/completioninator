@@ -13,7 +13,9 @@ so hash is the only replay-native key):
 .
 
 danser unpacks .osz files itself (UnpackOszFiles) and matches maps by hash,
-so the pipeline only needs to get the right .osz into the Songs directory.
+so the pipeline only needs to fetch the right .osz from a mirror into the
+server-side Songs dir. Fully remote by design: the only local folder in the
+whole system is the gaming PC's replay folder, synced to the NAS.
 Downloads are resume-safe: existing files are skipped, partial downloads
 use a `.part` suffix and are never left behind under the final name.
 """
@@ -286,6 +288,55 @@ def download_beatmapset(
     return dest
 
 
+def _mirror_chain(mirror: str, backend: str, fallback_mirror: str | None,
+                  fallback_backend: str) -> list[tuple[str, str]]:
+    """Primary + fallback (backend, base) pairs; empty fallback disables."""
+    chain = [(backend, mirror)]
+    if fallback_mirror and (fallback_mirror != mirror or fallback_backend != backend):
+        chain.append((fallback_backend, fallback_mirror))
+    return chain
+
+
+def _lookup_any(chain: list[tuple[str, str]], beatmap_hash: str, timeout: int) -> int | None:
+    """Try each mirror's lookup in order. Raises transient if all blipped."""
+    transient_seen = False
+    for backend, base in chain:
+        try:
+            if backend == "hinamizawa":
+                hit = lookup_set_id_hinamizawa(base, beatmap_hash, timeout)
+            else:
+                hit = lookup_set_id_by_hash(base, beatmap_hash, timeout)
+        except BeatmapError as exc:
+            log.warning("lookup via %s failed: %s", base, exc)
+            transient_seen = transient_seen or exc.transient
+            continue
+        if hit:
+            return hit
+    if transient_seen:
+        raise BeatmapError(f"mirror lookups unavailable (transient) for hash {beatmap_hash}",
+                           transient=True)
+    return None
+
+
+def _download_any(chain: list[tuple[str, str]], beatmapset_id: int,
+                  songs_dir: Path, timeout: int) -> Path:
+    """Try each mirror's download in order. Raises transient if any blipped."""
+    transient_seen = False
+    last: BeatmapError | None = None
+    for backend, base in chain:
+        try:
+            return download_beatmapset(base, beatmapset_id, songs_dir, timeout, backend)
+        except BeatmapError as exc:
+            log.warning("download via %s failed: %s", base, exc)
+            last = exc
+            transient_seen = transient_seen or exc.transient
+    assert last is not None
+    if transient_seen:
+        raise BeatmapError(f"all mirrors failed (transient) for set {beatmapset_id}: {last}",
+                           transient=True) from last
+    raise last
+
+
 def ensure_beatmap(
     mirror: str,
     beatmap_hash: str | None,
@@ -296,19 +347,19 @@ def ensure_beatmap(
     osu_client_secret: str | None = None,
     osu_base: str = "https://osu.ppy.sh",
     backend: str = "hinamizawa",
+    fallback_mirror: str | None = "https://catboy.best",
+    fallback_backend: str = "mino",
 ) -> tuple[int, Path]:
     """Ensure the .osz for a replay is in the Songs dir. Returns (set_id, path)."""
+    chain = _mirror_chain(mirror, backend, fallback_mirror, fallback_backend)
     if override_set_id is not None:
-        return override_set_id, download_beatmapset(mirror, override_set_id, songs_dir, timeout, backend)
+        return override_set_id, _download_any(chain, override_set_id, songs_dir, timeout)
     if not beatmap_hash:
         raise BeatmapError("no_beatmap: replay has no beatmap hash (unparseable .osr?)")
     transient_seen = False
     set_id = None
     try:
-        if backend == "hinamizawa":
-            set_id = lookup_set_id_hinamizawa(mirror, beatmap_hash, timeout)
-        else:
-            set_id = lookup_set_id_by_hash(mirror, beatmap_hash, timeout)
+        set_id = _lookup_any(chain, beatmap_hash, timeout)
     except BeatmapError as exc:
         if not exc.transient:
             raise
@@ -328,4 +379,4 @@ def ensure_beatmap(
                 f"beatmap services unavailable (transient) for hash {beatmap_hash}",
                 transient=True)
         raise BeatmapError(f"no_beatmap: hash {beatmap_hash} not found on mirror")
-    return set_id, download_beatmapset(mirror, set_id, songs_dir, timeout, backend)
+    return set_id, _download_any(chain, set_id, songs_dir, timeout)

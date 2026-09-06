@@ -181,14 +181,49 @@ def test_danser_beatmap_not_found_diagnosis(tmp_path: Path, monkeypatch):
 
     bad = RenderResult(False, None, "stdout...\nBeatmap not found, closing...\n", error="exit 1")
     monkeypatch.setattr(beatmaps, "set_checksums", lambda *a, **k: {"otherhash"})
-    msg = _diagnose_render_failure(Cfg(), "deadbeef", 2353587, bad)
-    assert "updated since play" in msg
+    msg, unrenderable = _diagnose_render_failure(Cfg(), "deadbeef", 2353587, bad)
+    assert "updated since play" in msg and unrenderable is True
 
     monkeypatch.setattr(beatmaps, "set_checksums", lambda *a, **k: {"deadbeef"})
-    assert "retry may help" in _diagnose_render_failure(Cfg(), "deadbeef", 2353587, bad)
+    msg2, unrenderable2 = _diagnose_render_failure(Cfg(), "deadbeef", 2353587, bad)
+    assert "retry may help" in msg2 and unrenderable2 is False
 
     ok = RenderResult(False, None, "some other log", error="boom")
-    assert _diagnose_render_failure(Cfg(), "deadbeef", 1, ok) == "boom"
+    assert _diagnose_render_failure(Cfg(), "deadbeef", 1, ok) == ("boom", False)
+
+
+def test_updated_map_parked_unrenderable(tmp_path: Path, monkeypatch, capsys):
+    import osu_pipeline.cli as cli_mod
+    from osu_pipeline.renderer import RenderResult
+
+    db = tmp_path / "p.sqlite"
+    (tmp_path / "replays").mkdir()
+    ((tmp_path / "replays") / "play.osr").write_bytes(b"fake-replay")
+    _seed_row(db, beatmap_hash="deadbeef")
+    cfg = _write_cfg(tmp_path)
+
+    class DeadRenderer:
+        cmd_prefix = [sys.executable]
+
+        def render(self, replay_osr, job_stem):
+            return RenderResult(False, None, "x\nBeatmap not found, closing...\n", error="exit 0")
+
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: DeadRenderer())
+    monkeypatch.setattr(
+        beatmaps, "ensure_beatmap", lambda *a, **k: (2353587, tmp_path / "songs" / "x.osz"))
+    monkeypatch.setattr(beatmaps, "set_checksums", lambda *a, **k: {"otherhash"})
+    assert main(["--config", str(cfg), "render", "--limit", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "UNRENDERABLE" in out and "unrenderable=1" in out
+    conn = database.connect(db)
+    try:
+        row = conn.execute("SELECT status, error FROM replays").fetchone()
+        assert row["status"] == "unrenderable"
+        assert "updated since play" in row["error"]
+        assert database.requeue_failed(conn) == 0  # requeue leaves it parked
+        assert database.claim_pending(conn) is None  # render claims skip it
+    finally:
+        conn.close()
 
 
 def test_render_disk_guard_stops_run(tmp_path: Path, monkeypatch, capsys):

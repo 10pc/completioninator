@@ -25,6 +25,10 @@ min_free_disk_gb = 5.0
 #       or "mino" (catboy.best; search-only lookup + official API fallback)
 backend = "hinamizawa"
 mirror = "https://mirror.hinamizawa.ai"
+# Second mirror tried per attempt when the primary misses or blips.
+# Empty string disables the fallback.
+fallback_backend = "mino"
+fallback_mirror = "https://catboy.best"
 songs_dir = "/data/beatmaps/songs"
 
 # Optional: official osu! API fallback for hash resolution.

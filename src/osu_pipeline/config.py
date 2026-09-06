@@ -33,6 +33,8 @@ class PipelineConfig:
     # beatmaps (Milestone 2)
     beatmap_mirror: str = "https://mirror.hinamizawa.ai"
     beatmap_backend: str = "hinamizawa"  # or "mino"
+    fallback_mirror: str | None = "https://catboy.best"
+    fallback_backend: str = "mino"
     songs_dir: Path = Path("/data/beatmaps/songs")
     # official osu! API fallback for hash resolution (optional; free OAuth app)
     osu_client_id: str | None = None
@@ -77,6 +79,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     min_free_gb = os.environ.get("PIPELINE_MIN_FREE_DISK_GB")
     mirror = os.environ.get("PIPELINE_BEATMAP_MIRROR")
     beatmap_backend = os.environ.get("PIPELINE_BEATMAP_BACKEND")
+    fallback_mirror = os.environ.get("PIPELINE_FALLBACK_MIRROR")
+    fallback_backend = os.environ.get("PIPELINE_FALLBACK_BACKEND")
     songs = os.environ.get("PIPELINE_SONGS_DIR")
     osu_client_id = os.environ.get("PIPELINE_OSU_CLIENT_ID")
     osu_client_secret = os.environ.get("PIPELINE_OSU_CLIENT_SECRET")
@@ -110,6 +114,11 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         limit_default = int(os.environ.get("PIPELINE_RENDER_LIMIT", str(render.get("limit_default", 10))))
         mirror = mirror or beatmaps.get("mirror", "https://mirror.hinamizawa.ai")
         beatmap_backend = beatmap_backend or beatmaps.get("backend", "hinamizawa")
+        if fallback_mirror is None:
+            fallback_mirror = beatmaps.get("fallback_mirror", "https://catboy.best")
+        elif fallback_mirror == "":
+            fallback_mirror = None  # explicitly disabled
+        fallback_backend = fallback_backend or beatmaps.get("fallback_backend", "mino")
         songs = songs or beatmaps.get("songs_dir", "/data/beatmaps/songs")
         osu = data.get("osu", {})
         osu_client_id = osu_client_id or osu.get("client_id")
@@ -118,6 +127,10 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         render_timeout = int(render_timeout or 7200)
         danser_extra = tuple(a for a in (danser_extra or "").split(",") if a.strip())
         min_free_gb = float(min_free_gb or 5.0)
+        if fallback_mirror is None:
+            fallback_mirror = "https://catboy.best"
+        elif fallback_mirror == "":
+            fallback_mirror = None
         render_max_attempts = int(render_max_attempts or 3)
         limit_default = int(os.environ.get("PIPELINE_RENDER_LIMIT", "10"))
 
@@ -138,6 +151,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         logs_dir=Path(logs or "/data/logs"),
         beatmap_mirror=mirror or "https://mirror.hinamizawa.ai",
         beatmap_backend=beatmap_backend or "hinamizawa",
+        fallback_mirror=fallback_mirror,
+        fallback_backend=fallback_backend or "mino",
         songs_dir=Path(songs or "/data/beatmaps/songs"),
         osu_client_id=osu_client_id,
         osu_client_secret=osu_client_secret,

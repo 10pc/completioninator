@@ -70,11 +70,12 @@ def _cmd_status(args, cfg) -> int:
     try:
         counts = database.get_counts(conn)
         print("Replays:")
-        print(f"  discovered: {counts.get('discovered', 0)}")
-        print(f"  pending:    {counts.get('pending', 0)}")
-        print(f"  rendering:  {counts.get('rendering', 0)}")
-        print(f"  rendered:   {counts.get('rendered', 0)}")
-        print(f"  failed:     {counts.get('failed', 0)}")
+        print(f"  discovered:   {counts.get('discovered', 0)}")
+        print(f"  pending:      {counts.get('pending', 0)}")
+        print(f"  rendering:    {counts.get('rendering', 0)}")
+        print(f"  rendered:     {counts.get('rendered', 0)}")
+        print(f"  failed:       {counts.get('failed', 0)}")
+        print(f"  unrenderable: {counts.get('unrenderable', 0)}")
         today = datetime.now(timezone.utc).date().isoformat()
         day = database.get_day_summary(conn, today)
         print(f"\nUTC day {today}:")
@@ -132,7 +133,7 @@ def _cmd_render(args, cfg) -> int:
 
     database.init_db(db_path)
     conn = database.connect(db_path)
-    stats = {"rendered": 0, "failed": 0, "skipped_disk": 0, "retried": 0}
+    stats = {"rendered": 0, "failed": 0, "skipped_disk": 0, "retried": 0, "unrenderable": 0}
     try:
         stale = database.reset_stale_rendering(conn)
         if stale:
@@ -157,12 +158,18 @@ def _cmd_render(args, cfg) -> int:
     finally:
         conn.close()
     print(f"rendered={stats['rendered']} failed={stats['failed']} "
+          f"unrenderable={stats['unrenderable']} "
           f"retried={stats['retried']} skipped_disk={stats['skipped_disk']}")
     return 0
 
 
-def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result) -> str:
-    """Turn danser log patterns into actionable job errors."""
+def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result) -> tuple[str, bool]:
+    """Turn danser log patterns into (actionable error, unrenderable?).
+
+    unrenderable=True means retrying is pointless (replay pins a map version
+    that no longer exists upstream): the job is parked terminally, skipped by
+    both render claims and requeue.
+    """
     if "Beatmap not found" in result.log_text and set_id:
         if bhash and cfg.beatmap_backend == "hinamizawa":
             try:
@@ -170,11 +177,11 @@ def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result)
             except Exception:  # noqa: BLE001 - diagnosis must never fail the job
                 current = None
             if current is not None and bhash.lower() not in current:
-                return (f"danser: beatmap not found in set {set_id}; replay hash absent "
-                        f"from current set version (map likely updated since play; "
-                        f"needs original .osz from local Songs)")
-        return f"danser: beatmap not found for set {set_id} (dancer DB mismatch; retry may help)"
-    return result.error or "render failed"
+                return ((f"danser: beatmap not found in set {set_id}; replay hash absent "
+                         f"from current set version (map updated since play and mirrors "
+                         f"only host the latest version)"), True)
+        return f"danser: beatmap not found for set {set_id} (dancer DB mismatch; retry may help)", False
+    return result.error or "render failed", False
 
 
 def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id, stats: dict) -> None:
@@ -212,6 +219,7 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
             cfg.beatmap_mirror, bhash, cfg.songs_dir, override_set_id=override_set_id,
             osu_client_id=cfg.osu_client_id, osu_client_secret=cfg.osu_client_secret,
             backend=cfg.beatmap_backend,
+            fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
         )
         database.set_beatmap(conn, jid, bhash, set_id)
     except beatmaps.BeatmapError as exc:
@@ -239,7 +247,12 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
     print(tail)
     scratch.unlink(missing_ok=True)
     if not result.ok:
-        cause = _diagnose_render_failure(cfg, bhash, set_id, result)
+        cause, unrenderable = _diagnose_render_failure(cfg, bhash, set_id, result)
+        if unrenderable:
+            database.mark_unrenderable(conn, jid, cause[-500:])
+            stats["unrenderable"] += 1
+            print(f"[{tag}] UNRENDERABLE: {cause}")
+            return
         database.mark_failed(conn, jid, cause[-500:])
         stats["failed"] += 1
         print(f"[{tag}] FAILED: {cause}")
@@ -291,12 +304,15 @@ def _cmd_progress(args, cfg) -> int:
         pct = 100.0 * rendered / total
         print(f"Day {day}: total={total} pending={summary.get('pending', 0)} "
               f"rendering={summary.get('rendering', 0)} rendered={rendered} "
-              f"failed={summary.get('failed', 0)} ({pct:.0f}% rendered)")
+              f"failed={summary.get('failed', 0)} "
+              f"unrenderable={summary.get('unrenderable', 0)} ({pct:.0f}% rendered)")
         rendering = database.get_day_jobs(conn, day, "rendering")
         for j in rendering:
             print(f"  now rendering: job-{j['id']} {j['path']} (attempt {j['attempts']})")
         for j in database.get_day_jobs(conn, day, "failed"):
             print(f"  failed: job-{j['id']} {j['path']}: {(j['error'] or '')[:160]}")
+        for j in database.get_day_jobs(conn, day, "unrenderable"):
+            print(f"  unrenderable: job-{j['id']} {j['path']}: {(j['error'] or '')[:160]}")
     finally:
         conn.close()
     return 0
