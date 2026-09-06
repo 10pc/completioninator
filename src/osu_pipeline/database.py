@@ -160,6 +160,14 @@ def requeue_failed(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+def requeue_one(conn: sqlite3.Connection, replay_id: int, error: str) -> None:
+    """Return one job to `pending` with a note (transient failure: retry soon)."""
+    conn.execute(
+        "UPDATE replays SET status = 'pending', error = ? WHERE id = ?", (error, replay_id)
+    )
+    conn.commit()
+
+
 def get_day_jobs(conn: sqlite3.Connection, day: str, status: str) -> list:
     """Rows for one day+status (progress overview, failure triage)."""
     rows = conn.execute(

@@ -87,6 +87,17 @@ Only `.osr` files carry a beatmap MD5 (no beatmap id inside), so hash
 resolution is the only replay-native key — the manual escape hatch is
 `render --beatmapset-id <id>` when you know the set.
 
+Failure triage (`progress` shows the short form, `/data/logs/job-<id>.log`
+the full danser output):
+
+- `transient: …` (mirror 503/pressure, timeouts) — job goes back to
+  `pending` by itself; the attempts cap still bounds endless retries.
+- `no_beatmap: …` — hash found nowhere (deleted map?); needs the original
+  `.osz` from the local Songs folder.
+- `danser: beatmap not found … updated since play` — the set downloaded
+  fine but the replay's hash is absent from its current version; same
+  remedy as above.
+
 Rules: never write to `/replays`, only `.osr` is processed (never `.part`),
 day boundary is UTC midnight, identity is `(path, sha256)`.
 

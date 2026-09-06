@@ -145,6 +145,52 @@ def test_keyboard_interrupt_exits_130(tmp_path: Path, monkeypatch):
     assert main(["--config", str(cfg), "render", "--limit", "5"]) == 130
 
 
+def test_transient_beatmap_failure_requeues(tmp_path: Path, monkeypatch, capsys):
+    import osu_pipeline.cli as cli_mod
+
+    db = tmp_path / "p.sqlite"
+    (tmp_path / "replays").mkdir()
+    ((tmp_path / "replays") / "play.osr").write_bytes(b"fake-replay")
+    _seed_row(db)
+    cfg = _write_cfg(tmp_path)
+    stub = _stub_renderer(tmp_path)
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: stub)
+
+    def _boom(*a, **k):
+        raise beatmaps.BeatmapError("mirror pressure", transient=True)
+
+    monkeypatch.setattr(beatmaps, "ensure_beatmap", _boom)
+    assert main(["--config", str(cfg), "render", "--limit", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "transient" in out and "retried=1" in out
+    conn = database.connect(db)
+    try:
+        row = conn.execute("SELECT status FROM replays").fetchone()
+        assert row["status"] == "pending"  # not failed: will retry
+    finally:
+        conn.close()
+
+
+def test_danser_beatmap_not_found_diagnosis(tmp_path: Path, monkeypatch):
+    from osu_pipeline.cli import _diagnose_render_failure
+    from osu_pipeline.renderer import RenderResult
+
+    class Cfg:
+        beatmap_mirror = "http://mirror"
+        beatmap_backend = "hinamizawa"
+
+    bad = RenderResult(False, None, "stdout...\nBeatmap not found, closing...\n", error="exit 1")
+    monkeypatch.setattr(beatmaps, "set_checksums", lambda *a, **k: {"otherhash"})
+    msg = _diagnose_render_failure(Cfg(), "deadbeef", 2353587, bad)
+    assert "updated since play" in msg
+
+    monkeypatch.setattr(beatmaps, "set_checksums", lambda *a, **k: {"deadbeef"})
+    assert "retry may help" in _diagnose_render_failure(Cfg(), "deadbeef", 2353587, bad)
+
+    ok = RenderResult(False, None, "some other log", error="boom")
+    assert _diagnose_render_failure(Cfg(), "deadbeef", 1, ok) == "boom"
+
+
 def test_render_disk_guard_stops_run(tmp_path: Path, monkeypatch, capsys):
     import collections
     import shutil

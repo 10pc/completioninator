@@ -31,7 +31,38 @@ log = logging.getLogger(__name__)
 
 
 class BeatmapError(Exception):
-    """Fatal-for-this-job beatmap problem (recorded, queue continues)."""
+    """Beatmap problem for one job (recorded, queue continues).
+
+    transient=True means "worth retrying soon" (mirror 503/pressure, timeouts,
+    error pages): the job goes back to pending instead of failed. The attempts
+    cap still bounds it, so a persistently-broken job eventually gives up.
+    """
+
+    def __init__(self, message: str, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
+_TRANSIENT_HTTP = {408, 429, 500, 502, 503, 504}
+
+
+def _is_transient_http(code: int) -> bool:
+    return code in _TRANSIENT_HTTP
+
+
+def _is_transient_network(exc: BaseException) -> bool:
+    import http.client
+    import socket
+    import urllib.error
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return _is_transient_http(exc.code)
+    return isinstance(exc, (
+        urllib.error.URLError,  # includes timeouts/connection resets
+        TimeoutError,
+        socket.timeout,
+        http.client.HTTPException,
+    ))
 
 
 def _silent_unlink(path: Path) -> None:
@@ -47,10 +78,13 @@ def _silent_unlink(path: Path) -> None:
 
 def _get_json(url: str, timeout: int) -> object:
     req = urllib.request.Request(url, headers={"User-Agent": "osu-completionist-pipeline/0.2"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        if resp.status != 200:
-            raise BeatmapError(f"mirror search HTTP {resp.status}: {url}")
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        if _is_transient_network(exc):
+            raise BeatmapError(f"mirror request failed (transient): {exc}", transient=True) from exc
+        raise BeatmapError(f"mirror search HTTP error: {exc}") from exc
 
 
 def lookup_set_id_hinamizawa(base: str, beatmap_hash: str, timeout: int = 30) -> int | None:
@@ -65,9 +99,11 @@ def lookup_set_id_hinamizawa(base: str, beatmap_hash: str, timeout: int = 30) ->
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
-        raise BeatmapError(f"hinamizawa md5 lookup HTTP {exc.code}") from exc
+        raise BeatmapError(f"hinamizawa md5 lookup HTTP {exc.code}",
+                           transient=_is_transient_http(exc.code)) from exc
     except Exception as exc:
-        raise BeatmapError(f"hinamizawa md5 lookup failed: {exc}") from exc
+        raise BeatmapError(f"hinamizawa md5 lookup failed: {exc}",
+                           transient=_is_transient_network(exc)) from exc
     set_id = payload.get("beatmapset_id")
     return int(set_id) if set_id else None
 
@@ -76,11 +112,13 @@ def lookup_set_id_by_hash(mirror: str, beatmap_hash: str, timeout: int = 30) -> 
     """Resolve a beatmap MD5 to a beatmapset id via Mino search (v1+v2 shapes)."""
     query = urllib.parse.quote(beatmap_hash)
     want = beatmap_hash.lower()
+    transient_seen = False
     for path in ("api/search", "api/v2/search"):
         try:
             data = _get_json(f"{mirror.rstrip('/')}/{path}?query={query}", timeout)
         except BeatmapError as exc:
             log.warning("mirror %s failed: %s", path, exc)
+            transient_seen = transient_seen or exc.transient
             continue
         if not isinstance(data, list):
             continue
@@ -99,7 +137,28 @@ def lookup_set_id_by_hash(mirror: str, beatmap_hash: str, timeout: int = 30) -> 
                     set_id = child.get("beatmapset_id") or entry.get("id")
                     if set_id:
                         return int(set_id)
+    if transient_seen:
+        raise BeatmapError("mirror search unavailable (transient)", transient=True)
     return None
+
+
+def set_checksums(base: str, beatmapset_id: int, timeout: int = 30) -> set[str] | None:
+    """Best-effort: current difficulty checksums of a set (hinamizawa only).
+
+    Returns None when the backend has no such endpoint or the call fails —
+    callers must treat None as "unknown", never as "hash absent".
+    """
+    try:
+        data = _get_json(f"{base.rstrip('/')}/v3/osu/beatmaps/s/{beatmapset_id}", timeout)
+    except BeatmapError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    out = set()
+    for child in data.get("beatmaps", []):
+        if isinstance(child, dict) and child.get("checksum"):
+            out.add(str(child["checksum"]).lower())
+    return out or None
 
 
 # --- Tier 2: official osu! API (needs a free OAuth app; definitive) ---
@@ -126,7 +185,8 @@ def _osu_token(osu_base: str, client_id: str, client_secret: str, timeout: int) 
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        raise BeatmapError(f"osu! OAuth failed: {exc}") from exc
+        raise BeatmapError(f"osu! OAuth failed: {exc}",
+                           transient=_is_transient_network(exc)) from exc
     token = payload.get("access_token")
     if not token:
         raise BeatmapError("osu! OAuth returned no access_token")
@@ -157,9 +217,11 @@ def lookup_set_id_official(
             return None
         if exc.code == 401:  # token stale; drop cache so next call re-auths
             _token_cache.clear()
-        raise BeatmapError(f"osu! lookup HTTP {exc.code}") from exc
+        raise BeatmapError(f"osu! lookup HTTP {exc.code}",
+                           transient=_is_transient_http(exc.code)) from exc
     except Exception as exc:
-        raise BeatmapError(f"osu! lookup failed: {exc}") from exc
+        raise BeatmapError(f"osu! lookup failed: {exc}",
+                           transient=_is_transient_network(exc)) from exc
     set_id = payload.get("beatmapset_id")
     return int(set_id) if set_id else None
 
@@ -206,16 +268,19 @@ def download_beatmapset(
         raise
     except Exception as exc:
         _silent_unlink(tmp)
-        raise BeatmapError(f"download failed for set {beatmapset_id}: {exc}") from exc
+        raise BeatmapError(f"download failed for set {beatmapset_id}: {exc}",
+                           transient=_is_transient_network(exc)) from exc
 
     if tmp.stat().st_size == 0:
         _silent_unlink(tmp)
-        raise BeatmapError(f"mirror returned empty file for set {beatmapset_id}")
+        raise BeatmapError(f"mirror returned empty file for set {beatmapset_id}",
+                           transient=True)  # usually an error page, not a real empty set
     with open(tmp, "rb") as f:
         magic = f.read(2)
     if magic != b"PK":
         _silent_unlink(tmp)
-        raise BeatmapError(f"mirror returned non-zip payload for set {beatmapset_id}")
+        raise BeatmapError(f"mirror returned non-zip payload for set {beatmapset_id}",
+                           transient=True)
     tmp.rename(dest)
     log.info("downloaded beatmapset %s -> %s", beatmapset_id, dest)
     return dest
@@ -237,14 +302,30 @@ def ensure_beatmap(
         return override_set_id, download_beatmapset(mirror, override_set_id, songs_dir, timeout, backend)
     if not beatmap_hash:
         raise BeatmapError("no_beatmap: replay has no beatmap hash (unparseable .osr?)")
-    if backend == "hinamizawa":
-        set_id = lookup_set_id_hinamizawa(mirror, beatmap_hash, timeout)
-    else:
-        set_id = lookup_set_id_by_hash(mirror, beatmap_hash, timeout)
+    transient_seen = False
+    set_id = None
+    try:
+        if backend == "hinamizawa":
+            set_id = lookup_set_id_hinamizawa(mirror, beatmap_hash, timeout)
+        else:
+            set_id = lookup_set_id_by_hash(mirror, beatmap_hash, timeout)
+    except BeatmapError as exc:
+        if not exc.transient:
+            raise
+        transient_seen = True
     if set_id is None and osu_client_id and osu_client_secret:
         log.info("mirror missed hash %s; trying official osu! lookup", beatmap_hash)
-        set_id = lookup_set_id_official(
-            beatmap_hash, osu_client_id, osu_client_secret, timeout, osu_base)
+        try:
+            set_id = lookup_set_id_official(
+                beatmap_hash, osu_client_id, osu_client_secret, timeout, osu_base)
+        except BeatmapError as exc:
+            if not exc.transient:
+                raise
+            transient_seen = True
     if set_id is None:
+        if transient_seen:
+            raise BeatmapError(
+                f"beatmap services unavailable (transient) for hash {beatmap_hash}",
+                transient=True)
         raise BeatmapError(f"no_beatmap: hash {beatmap_hash} not found on mirror")
     return set_id, download_beatmapset(mirror, set_id, songs_dir, timeout, backend)

@@ -73,6 +73,9 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(FAKE_OSZ)))
             self.end_headers()
             self.wfile.write(FAKE_OSZ)
+        elif self.path == "/api/v1/hinai/d/503":
+            self.send_response(503)
+            self.end_headers()
         elif self.path == "/d/42":
             self.send_response(200)
             self.send_header("Content-Length", str(len(FAKE_OSZ)))
@@ -181,3 +184,23 @@ def test_hinamizawa_end_to_end(mirror, tmp_path: Path):
     assert beatmaps.ensure_beatmap(mirror, HINAI_MD5, songs, backend="hinamizawa")[0] == 66
     with pytest.raises(beatmaps.BeatmapError, match="no_beatmap"):
         beatmaps.ensure_beatmap(mirror, "nope" * 8, songs, backend="hinamizawa")
+
+
+def test_transient_classification():
+    import urllib.error
+
+    def http_error(code):
+        return urllib.error.HTTPError("http://x/", code, "msg", {}, None)
+
+    assert beatmaps._is_transient_network(http_error(503)) is True
+    assert beatmaps._is_transient_network(http_error(429)) is True
+    assert beatmaps._is_transient_network(http_error(404)) is False
+    assert beatmaps._is_transient_network(TimeoutError()) is True
+
+
+def test_503_download_is_transient(mirror, tmp_path: Path):
+    # stub has no md5 route for this hash; resolve via override to reach download
+    with pytest.raises(beatmaps.BeatmapError) as ei:
+        beatmaps.ensure_beatmap(mirror, None, tmp_path, override_set_id=503, backend="hinamizawa")
+    assert ei.value.transient is True
+    assert "503" in str(ei.value)

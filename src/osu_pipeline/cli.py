@@ -132,7 +132,7 @@ def _cmd_render(args, cfg) -> int:
 
     database.init_db(db_path)
     conn = database.connect(db_path)
-    stats = {"rendered": 0, "failed": 0, "skipped_disk": 0}
+    stats = {"rendered": 0, "failed": 0, "skipped_disk": 0, "retried": 0}
     try:
         stale = database.reset_stale_rendering(conn)
         if stale:
@@ -156,8 +156,25 @@ def _cmd_render(args, cfg) -> int:
         return 130
     finally:
         conn.close()
-    print(f"rendered={stats['rendered']} failed={stats['failed']} skipped_disk={stats['skipped_disk']}")
+    print(f"rendered={stats['rendered']} failed={stats['failed']} "
+          f"retried={stats['retried']} skipped_disk={stats['skipped_disk']}")
     return 0
+
+
+def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result) -> str:
+    """Turn danser log patterns into actionable job errors."""
+    if "Beatmap not found" in result.log_text and set_id:
+        if bhash and cfg.beatmap_backend == "hinamizawa":
+            try:
+                current = beatmaps.set_checksums(cfg.beatmap_mirror, set_id)
+            except Exception:  # noqa: BLE001 - diagnosis must never fail the job
+                current = None
+            if current is not None and bhash.lower() not in current:
+                return (f"danser: beatmap not found in set {set_id}; replay hash absent "
+                        f"from current set version (map likely updated since play; "
+                        f"needs original .osz from local Songs)")
+        return f"danser: beatmap not found for set {set_id} (dancer DB mismatch; retry may help)"
+    return result.error or "render failed"
 
 
 def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id, stats: dict) -> None:
@@ -189,6 +206,7 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
     if bhash and not job.get("beatmap_hash"):
         database.set_beatmap(conn, jid, bhash, job.get("beatmapset_id"))
 
+    set_id = job.get("beatmapset_id")
     try:
         set_id, _osz = beatmaps.ensure_beatmap(
             cfg.beatmap_mirror, bhash, cfg.songs_dir, override_set_id=override_set_id,
@@ -197,6 +215,12 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
         )
         database.set_beatmap(conn, jid, bhash, set_id)
     except beatmaps.BeatmapError as exc:
+        if exc.transient:
+            # Mirror blip (503/pressure/timeout): back to pending, attempts cap bounds it.
+            database.requeue_one(conn, jid, f"transient: {exc}")
+            stats["retried"] += 1
+            print(f"[{tag}] transient beatmap failure, requeued: {exc}")
+            return
         database.mark_failed(conn, jid, str(exc))
         stats["failed"] += 1
         print(f"[{tag}] beatmap unavailable: {exc}")
@@ -215,9 +239,10 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
     print(tail)
     scratch.unlink(missing_ok=True)
     if not result.ok:
-        database.mark_failed(conn, jid, (result.error or "render failed")[-500:])
+        cause = _diagnose_render_failure(cfg, bhash, set_id, result)
+        database.mark_failed(conn, jid, cause[-500:])
         stats["failed"] += 1
-        print(f"[{tag}] FAILED: {result.error}")
+        print(f"[{tag}] FAILED: {cause}")
         return
 
     day = job.get("day") or "unknown-day"
