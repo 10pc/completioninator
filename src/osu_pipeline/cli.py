@@ -35,6 +35,9 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--db", default=None, help="Override database path")
     r.add_argument("--beatmapset-id", type=int, default=None,
                    help="Skip mirror lookup; use this beatmapset for every job (acceptance testing)")
+
+    q = sub.add_parser("requeue", help="Return failed jobs to pending for retry")
+    q.add_argument("--db", default=None, help="Override database path")
     return p
 
 
@@ -141,7 +144,9 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
 
     try:
         set_id, _osz = beatmaps.ensure_beatmap(
-            cfg.beatmap_mirror, bhash, cfg.songs_dir, override_set_id=override_set_id
+            cfg.beatmap_mirror, bhash, cfg.songs_dir, override_set_id=override_set_id,
+            osu_client_id=cfg.osu_client_id, osu_client_secret=cfg.osu_client_secret,
+            backend=cfg.beatmap_backend,
         )
         database.set_beatmap(conn, jid, bhash, set_id)
     except beatmaps.BeatmapError as exc:
@@ -175,6 +180,18 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
     print(f"[{tag}] rendered -> {dest} ({result.duration_s}s)" if result.duration_s else f"[{tag}] rendered -> {dest}")
 
 
+def _cmd_requeue(args, cfg) -> int:
+    db_path = Path(args.db) if args.db else cfg.database_path
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    try:
+        n = database.requeue_failed(conn)
+    finally:
+        conn.close()
+    print(f"requeued={n}")
+    return 0
+
+
 def main(argv: list | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -193,6 +210,8 @@ def main(argv: list | None = None) -> int:
         return _cmd_status(args, cfg)
     if args.command == "render":
         return _cmd_render(args, cfg)
+    if args.command == "requeue":
+        return _cmd_requeue(args, cfg)
     parser.print_help()
     return 2
 

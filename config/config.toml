@@ -16,5 +16,15 @@ max_attempts = 3
 limit_default = 10
 
 [beatmaps]
-mirror = "https://catboy.best"
+# backend: "hinamizawa" (default; direct md5 lookup, graveyard coverage, no key)
+#       or "mino" (catboy.best; search-only lookup + official API fallback)
+backend = "hinamizawa"
+mirror = "https://mirror.hinamizawa.ai"
 songs_dir = "/data/beatmaps/songs"
+
+# Optional: official osu! API fallback for hash resolution.
+# Free OAuth app at https://osu.ppy.sh/home/account/edit (no callback needed
+# for client-credentials flow). Prefer env vars for the secret.
+# client_id = 12345
+# client_secret = "..."
+[osu]

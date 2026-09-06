@@ -24,8 +24,27 @@ docker compose run --rm pipeline status
 ls data/rendered/*/
 ```
 
-Beatmaps come from the catboy.best mirror automatically (no key needed);
-downloaded `.osz` files are cached in `/data/beatmaps/songs` for danser.
+Beatmaps resolve through the hinamizawa.ai mirror by default — direct MD5
+lookup, no key, ranked + graveyard coverage. Downloaded `.osz` files are
+cached in `/data/beatmaps/songs` for danser. (`backend = "mino"` in
+`config.toml` switches back to catboy.best + official-API fallback.)
+
+If the mirror misses a map hash, the pipeline can fall back to the official
+osu! API (`beatmaps/lookup?checksum=`). That needs a free OAuth app
+(https://osu.ppy.sh/home/account/edit — create an application, no callback
+URL needed for this flow), then:
+
+```bash
+# on the render server (or compose.override.yml environment:)
+export PIPELINE_OSU_CLIENT_ID=12345
+export PIPELINE_OSU_CLIENT_SECRET='...'
+docker compose run --rm pipeline requeue   # retry previously failed jobs
+docker compose run --rm pipeline render --limit 10
+```
+
+Only `.osr` files carry a beatmap MD5 (no beatmap id inside), so hash
+resolution is the only replay-native key — the manual escape hatch is
+`render --beatmapset-id <id>` when you know the set.
 
 Rules: never write to `/replays`, only `.osr` is processed (never `.part`),
 day boundary is UTC midnight, identity is `(path, sha256)`.

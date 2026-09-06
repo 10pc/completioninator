@@ -152,6 +152,13 @@ def reset_stale_rendering(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+def requeue_failed(conn: sqlite3.Connection) -> int:
+    """Return `failed` jobs to `pending` so they can be retried after a fix."""
+    cur = conn.execute("UPDATE replays SET status = 'pending', error = NULL WHERE status = 'failed'")
+    conn.commit()
+    return cur.rowcount
+
+
 def set_beatmap(conn: sqlite3.Connection, replay_id: int, beatmap_hash: str | None, beatmapset_id: int | None) -> None:
     conn.execute(
         "UPDATE replays SET beatmap_hash = ?, beatmapset_id = ? WHERE id = ?",

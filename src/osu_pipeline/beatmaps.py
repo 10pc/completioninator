@@ -1,9 +1,16 @@
-"""Beatmap sourcing via the catboy.best (Mino) mirror. No API key required.
+"""Beatmap sourcing: resolve MD5 (.osr) -> beatmapset id -> .osz from mirror.
 
-Resolution chain per replay:
-    replay.beatmap_hash (MD5 from .osr)
-        -> Mino search API -> beatmapset id
-        -> GET {mirror}/d/{set_id} -> .osz dropped into danser's Songs dir
+Resolution chain per replay (.osr files carry a beatmap MD5 but NO beatmap id,
+so hash is the only replay-native key):
+    Tier 1 (no credentials): mirror hash lookup —
+        hinamizawa: GET {base}/v3/osu/beatmaps/md5/{hash} (direct, incl. graveyard)
+        mino:       search API scanned for the hash (text index; md5 queries miss)
+    Tier 2 (free osu! OAuth app): official API v2 beatmaps/lookup?checksum=
+        -> beatmapset id (definitive; 404 means the map is deleted from osu!).
+    Download: mirror .osz endpoint -> file dropped into danser's Songs dir
+        hinamizawa: GET {base}/api/v1/hinai/d/{set_id} (proxied bytes)
+        mino:       GET {base}/d/{set_id}
+.
 
 danser unpacks .osz files itself (UnpackOszFiles) and matches maps by hash,
 so the pipeline only needs to get the right .osz into the Songs directory.
@@ -46,23 +53,131 @@ def _get_json(url: str, timeout: int) -> object:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def lookup_set_id_hinamizawa(base: str, beatmap_hash: str, timeout: int = 30) -> int | None:
+    """Direct MD5 -> beatmap lookup (no auth, covers ranked + graveyard). None on 404."""
+    import urllib.error
+
+    url = f"{base.rstrip('/')}/v3/osu/beatmaps/md5/{urllib.parse.quote(beatmap_hash)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "osu-completionist-pipeline/0.2"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise BeatmapError(f"hinamizawa md5 lookup HTTP {exc.code}") from exc
+    except Exception as exc:
+        raise BeatmapError(f"hinamizawa md5 lookup failed: {exc}") from exc
+    set_id = payload.get("beatmapset_id")
+    return int(set_id) if set_id else None
+
+
 def lookup_set_id_by_hash(mirror: str, beatmap_hash: str, timeout: int = 30) -> int | None:
-    """Resolve a beatmap MD5 to a beatmapset id via Mino search. None if not found."""
+    """Resolve a beatmap MD5 to a beatmapset id via Mino search (v1+v2 shapes)."""
     query = urllib.parse.quote(beatmap_hash)
-    data = _get_json(f"{mirror.rstrip('/')}/api/search?query={query}", timeout)
-    if not isinstance(data, list):
-        raise BeatmapError(f"unexpected search response shape: {type(data)}")
     want = beatmap_hash.lower()
-    for entry in data:
-        for child in entry.get("ChildrenBeatmaps", []):
-            if str(child.get("FileMD5", "")).lower() == want:
-                set_id = child.get("ParentSetID") or entry.get("SetID")
-                if set_id:
-                    return int(set_id)
+    for path in ("api/search", "api/v2/search"):
+        try:
+            data = _get_json(f"{mirror.rstrip('/')}/{path}?query={query}", timeout)
+        except BeatmapError as exc:
+            log.warning("mirror %s failed: %s", path, exc)
+            continue
+        if not isinstance(data, list):
+            continue
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            # v1 (CheeseGull): ChildrenBeatmaps[].FileMD5 / ParentSetID / SetID
+            for child in entry.get("ChildrenBeatmaps", []):
+                if str(child.get("FileMD5", "")).lower() == want:
+                    set_id = child.get("ParentSetID") or entry.get("SetID")
+                    if set_id:
+                        return int(set_id)
+            # v2: beatmaps[].checksum / id
+            for child in entry.get("beatmaps", []):
+                if str(child.get("checksum", "")).lower() == want:
+                    set_id = child.get("beatmapset_id") or entry.get("id")
+                    if set_id:
+                        return int(set_id)
     return None
 
 
-def download_beatmapset(mirror: str, beatmapset_id: int, songs_dir: Path, timeout: int = 120) -> Path:
+# --- Tier 2: official osu! API (needs a free OAuth app; definitive) ---
+
+_token_cache: dict = {}
+
+
+def _osu_token(osu_base: str, client_id: str, client_secret: str, timeout: int) -> str:
+    cached = _token_cache.get("token")
+    if cached and _token_cache.get("expires_at", 0) > time.time() + 60:
+        return cached
+    body = urllib.parse.urlencode({
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scope": "public",
+    }).encode()
+    req = urllib.request.Request(
+        f"{osu_base.rstrip('/')}/oauth/token", data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded",
+                 "User-Agent": "osu-completionist-pipeline/0.2"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise BeatmapError(f"osu! OAuth failed: {exc}") from exc
+    token = payload.get("access_token")
+    if not token:
+        raise BeatmapError("osu! OAuth returned no access_token")
+    _token_cache["token"] = token
+    _token_cache["expires_at"] = time.time() + int(payload.get("expires_in", 3600))
+    return token
+
+
+def lookup_set_id_official(
+    beatmap_hash: str,
+    client_id: str,
+    client_secret: str,
+    timeout: int = 30,
+    osu_base: str = "https://osu.ppy.sh",
+) -> int | None:
+    """Resolve MD5 via official API v2 beatmaps/lookup?checksum=. None = deleted/missing."""
+    import urllib.error
+
+    token = _osu_token(osu_base, client_id, client_secret, timeout)
+    url = f"{osu_base.rstrip('/')}/api/v2/beatmaps/lookup?checksum={urllib.parse.quote(beatmap_hash)}"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}", "User-Agent": "osu-completionist-pipeline/0.2"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        if exc.code == 401:  # token stale; drop cache so next call re-auths
+            _token_cache.clear()
+        raise BeatmapError(f"osu! lookup HTTP {exc.code}") from exc
+    except Exception as exc:
+        raise BeatmapError(f"osu! lookup failed: {exc}") from exc
+    set_id = payload.get("beatmapset_id")
+    return int(set_id) if set_id else None
+
+
+def _download_url(mirror: str, beatmapset_id: int, backend: str) -> str:
+    base = mirror.rstrip("/")
+    if backend == "hinamizawa":
+        return f"{base}/api/v1/hinai/d/{beatmapset_id}"  # proxied .osz bytes
+    return f"{base}/d/{beatmapset_id}"
+
+
+def download_beatmapset(
+    mirror: str,
+    beatmapset_id: int,
+    songs_dir: Path,
+    timeout: int = 120,
+    backend: str = "hinamizawa",
+) -> Path:
     """Download `<set_id>.osz` into the Songs dir. Skips if already present and valid."""
     songs_dir = Path(songs_dir)
     songs_dir.mkdir(parents=True, exist_ok=True)
@@ -74,7 +189,7 @@ def download_beatmapset(mirror: str, beatmapset_id: int, songs_dir: Path, timeou
         log.warning("existing %s is not a zip; re-downloading", dest)
         dest.unlink()
 
-    url = f"{mirror.rstrip('/')}/d/{beatmapset_id}"
+    url = _download_url(mirror, beatmapset_id, backend)
     tmp = dest.with_suffix(".osz.part")
     req = urllib.request.Request(url, headers={"User-Agent": "osu-completionist-pipeline/0.2"})
     try:
@@ -112,13 +227,24 @@ def ensure_beatmap(
     songs_dir: Path,
     timeout: int = 30,
     override_set_id: int | None = None,
+    osu_client_id: str | None = None,
+    osu_client_secret: str | None = None,
+    osu_base: str = "https://osu.ppy.sh",
+    backend: str = "hinamizawa",
 ) -> tuple[int, Path]:
     """Ensure the .osz for a replay is in the Songs dir. Returns (set_id, path)."""
     if override_set_id is not None:
-        return override_set_id, download_beatmapset(mirror, override_set_id, songs_dir, timeout)
+        return override_set_id, download_beatmapset(mirror, override_set_id, songs_dir, timeout, backend)
     if not beatmap_hash:
         raise BeatmapError("no_beatmap: replay has no beatmap hash (unparseable .osr?)")
-    set_id = lookup_set_id_by_hash(mirror, beatmap_hash, timeout)
+    if backend == "hinamizawa":
+        set_id = lookup_set_id_hinamizawa(mirror, beatmap_hash, timeout)
+    else:
+        set_id = lookup_set_id_by_hash(mirror, beatmap_hash, timeout)
+    if set_id is None and osu_client_id and osu_client_secret:
+        log.info("mirror missed hash %s; trying official osu! lookup", beatmap_hash)
+        set_id = lookup_set_id_official(
+            beatmap_hash, osu_client_id, osu_client_secret, timeout, osu_base)
     if set_id is None:
         raise BeatmapError(f"no_beatmap: hash {beatmap_hash} not found on mirror")
-    return set_id, download_beatmapset(mirror, set_id, songs_dir, timeout)
+    return set_id, download_beatmapset(mirror, set_id, songs_dir, timeout, backend)

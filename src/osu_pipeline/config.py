@@ -28,8 +28,12 @@ class PipelineConfig:
     working_dir: Path = Path("/data/working")
     rendered_dir: Path = Path("/data/rendered")
     # beatmaps (Milestone 2)
-    beatmap_mirror: str = "https://catboy.best"
+    beatmap_mirror: str = "https://mirror.hinamizawa.ai"
+    beatmap_backend: str = "hinamizawa"  # or "mino"
     songs_dir: Path = Path("/data/beatmaps/songs")
+    # official osu! API fallback for hash resolution (optional; free OAuth app)
+    osu_client_id: str | None = None
+    osu_client_secret: str | None = None
 
     @property
     def resolved(self) -> "PipelineConfig":
@@ -66,7 +70,10 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     working = os.environ.get("PIPELINE_WORKING_DIR")
     rendered = os.environ.get("PIPELINE_RENDERED_DIR")
     mirror = os.environ.get("PIPELINE_BEATMAP_MIRROR")
+    beatmap_backend = os.environ.get("PIPELINE_BEATMAP_BACKEND")
     songs = os.environ.get("PIPELINE_SONGS_DIR")
+    osu_client_id = os.environ.get("PIPELINE_OSU_CLIENT_ID")
+    osu_client_secret = os.environ.get("PIPELINE_OSU_CLIENT_SECRET")
     render_timeout = os.environ.get("PIPELINE_RENDER_TIMEOUT")
     render_max_attempts = os.environ.get("PIPELINE_RENDER_MAX_ATTEMPTS")
 
@@ -88,8 +95,12 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         render_timeout = int(render_timeout or render.get("timeout_seconds", 600))
         render_max_attempts = int(render_max_attempts or render.get("max_attempts", 3))
         limit_default = int(os.environ.get("PIPELINE_RENDER_LIMIT", str(render.get("limit_default", 10))))
-        mirror = mirror or beatmaps.get("mirror", "https://catboy.best")
+        mirror = mirror or beatmaps.get("mirror", "https://mirror.hinamizawa.ai")
+        beatmap_backend = beatmap_backend or beatmaps.get("backend", "hinamizawa")
         songs = songs or beatmaps.get("songs_dir", "/data/beatmaps/songs")
+        osu = data.get("osu", {})
+        osu_client_id = osu_client_id or osu.get("client_id")
+        osu_client_secret = osu_client_secret or osu.get("client_secret")
     else:
         render_timeout = int(render_timeout or 600)
         render_max_attempts = int(render_max_attempts or 3)
@@ -107,6 +118,9 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         render_limit_default=limit_default,
         working_dir=Path(working or "/data/working"),
         rendered_dir=Path(rendered or "/data/rendered"),
-        beatmap_mirror=mirror or "https://catboy.best",
+        beatmap_mirror=mirror or "https://mirror.hinamizawa.ai",
+        beatmap_backend=beatmap_backend or "hinamizawa",
         songs_dir=Path(songs or "/data/beatmaps/songs"),
+        osu_client_id=osu_client_id,
+        osu_client_secret=osu_client_secret,
     )
