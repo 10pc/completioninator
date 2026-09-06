@@ -57,6 +57,13 @@ class PipelineConfig:
     completion_passed: str = ""
     completion_left: str = ""
     completion_pct: str = ""
+    # youtube (Milestone 6; secrets via env ONLY — config.toml is committed)
+    youtube_client_id: str | None = None
+    youtube_client_secret: str | None = None
+    youtube_token_path: Path = Path("/data/db/youtube-token.json")
+    youtube_privacy: str = "unlisted"
+    youtube_category_id: str = "20"
+    youtube_title_template: str = "OSU! Completionist — {day} ({clips} maps)"
     fontfile: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     daily_dir: Path = Path("/data/daily")
 
@@ -107,6 +114,10 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     max_clips = os.environ.get("PIPELINE_MAX_CLIPS")
     header_extra = os.environ.get("PIPELINE_HEADER_EXTRA")
     daily_dir = os.environ.get("PIPELINE_DAILY_DIR")
+    youtube_client_id = os.environ.get("PIPELINE_YOUTUBE_CLIENT_ID")
+    youtube_client_secret = os.environ.get("PIPELINE_YOUTUBE_CLIENT_SECRET")
+    youtube_token_path = os.environ.get("PIPELINE_YOUTUBE_TOKEN_PATH")
+    youtube_privacy = os.environ.get("PIPELINE_YOUTUBE_PRIVACY")
     render_timeout = os.environ.get("PIPELINE_RENDER_TIMEOUT")
     render_max_attempts = os.environ.get("PIPELINE_RENDER_MAX_ATTEMPTS")
 
@@ -171,6 +182,13 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
                                         video.get("completion_pct", ""))
         fontfile = video.get("fontfile", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
         daily_dir = daily_dir or video.get("daily", paths.get("daily", "/data/daily"))
+        youtube = data.get("youtube", {})
+        youtube_token_path = youtube_token_path or youtube.get(
+            "token_path", "/data/db/youtube-token.json")
+        youtube_privacy = youtube_privacy or youtube.get("privacy", "unlisted")
+        youtube_category_id = youtube.get("category_id", "20")
+        youtube_title_template = youtube.get(
+            "title_template", "OSU! Completionist — {day} ({clips} maps)")
     else:
         render_timeout = int(render_timeout or 7200)
         danser_extra = tuple(a for a in (danser_extra or "").split(",") if a.strip())
@@ -192,6 +210,9 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         completion_passed = os.environ.get("PIPELINE_COMPLETION_PASSED", "")
         completion_left = os.environ.get("PIPELINE_COMPLETION_LEFT", "")
         completion_pct = os.environ.get("PIPELINE_COMPLETION_PCT", "")
+        youtube_token_path = youtube_token_path or "/data/db/youtube-token.json"
+        youtube_privacy = youtube_privacy or "unlisted"
+        youtube_category_id, youtube_title_template = "20", "OSU! Completionist — {day} ({clips} maps)"
         fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         daily_dir = daily_dir or "/data/daily"
 
@@ -236,4 +257,10 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         completion_pct=completion_pct,
         fontfile=fontfile,
         daily_dir=Path(daily_dir),
+        youtube_client_id=youtube_client_id,
+        youtube_client_secret=youtube_client_secret,
+        youtube_token_path=Path(youtube_token_path or "/data/db/youtube-token.json"),
+        youtube_privacy=youtube_privacy or "unlisted",
+        youtube_category_id=youtube_category_id,
+        youtube_title_template=youtube_title_template,
     )

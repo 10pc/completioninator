@@ -56,6 +56,15 @@ def _build_parser() -> argparse.ArgumentParser:
     dl.add_argument("--max-clips", type=int, default=None, help="Keep longest N clips (default: config)")
     dl.add_argument("--scan-root", default=None, help="Override replay directory")
     dl.add_argument("--db", default=None, help="Override database path")
+
+    au = sub.add_parser("auth-youtube", help="One-time browser authorization for uploads")
+    au.add_argument("--port", type=int, default=8080, help="Local callback port (publish it)")
+    au.add_argument("--db", default=None, help="Override database path")
+
+    up = sub.add_parser("upload", help="Upload a daily video to YouTube")
+    up.add_argument("day", help="YYYY-MM-DD of the daily video")
+    up.add_argument("--force", action="store_true", help="Re-upload even if recorded")
+    up.add_argument("--db", default=None, help="Override database path")
     return p
 
 
@@ -105,6 +114,12 @@ def _cmd_status(args, cfg) -> int:
                 snap = f" [{latest['passed']}/{latest.get('left')} ({latest.get('pct')})]"
             print(f"\nLatest daily: {latest['path']} "
                   f"({latest['clips']} clips, day {latest['day']}){snap}")
+        uploads = database.recent_uploads(conn)
+        if uploads:
+            print("\nRecent uploads:")
+            for u in uploads:
+                print(f"  {u['day']} {u['platform']}: {u['status']}"
+                      f"{' ' + u['remote_url'] if u.get('remote_url') else ''}")
     finally:
         conn.close()
     return 0
@@ -571,6 +586,76 @@ def _cmd_daily(args, cfg) -> int:
     return 0
 
 
+def _cmd_auth_youtube(args, cfg) -> int:
+    from . import uploader
+
+    if not cfg.youtube_client_id or not cfg.youtube_client_secret:
+        print("youtube client ID/secret not configured "
+              "(PIPELINE_YOUTUBE_CLIENT_ID / PIPELINE_YOUTUBE_CLIENT_SECRET)", file=sys.stderr)
+        return 2
+    print("Open this URL in the VNC browser if it doesn't open by itself, "
+          "approve, and wait for the callback "
+          f"(publish port with: docker compose run --rm -p 127.0.0.1:{args.port}:{args.port} "
+          f"pipeline auth-youtube --port {args.port})")
+    uploader.run_auth_flow(cfg.youtube_client_id, cfg.youtube_client_secret,
+                           cfg.youtube_token_path, port=args.port)
+    return 0
+
+
+def _cmd_upload(args, cfg) -> int:
+    from . import uploader
+
+    db_path = Path(args.db) if args.db else cfg.database_path
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    try:
+        existing = database.get_upload(conn, args.day, "youtube")
+        if existing and existing["status"] == "uploaded" and not args.force:
+            print(f"day {args.day} already uploaded: {existing.get('remote_url')} (use --force)")
+            return 0
+        row = conn.execute("SELECT * FROM daily WHERE day = ?", (args.day,)).fetchone()
+        if row is None:
+            print(f"no daily video for {args.day}; compose one first", file=sys.stderr)
+            return 2
+        video = Path(row["path"])
+        if not video.exists():
+            print(f"daily file missing: {video}", file=sys.stderr)
+            return 2
+        if not cfg.youtube_client_id or not cfg.youtube_client_secret:
+            print("youtube client ID/secret not configured", file=sys.stderr)
+            return 2
+        creds = uploader.load_credentials(cfg.youtube_token_path)
+        if creds is None:
+            print(f"not authorized; run auth-youtube first (token: {cfg.youtube_token_path})",
+                  file=sys.stderr)
+            return 2
+        title = uploader.render_title(cfg.youtube_title_template, args.day,
+                                      row["clips"], row["span"])
+        description = (
+            f"osu!standard completionist daily grid — {row['clips']} maps "
+            f"({row['span'] or args.day}).\n"
+            + (f"Completion at compose time: {row['passed']}/{row['left']} ({row['pct']}).\n"
+               if row["passed"] else "")
+            + "Rendered with danser; composed by the completioninator pipeline."
+        )
+        database.mark_uploading(conn, args.day, "youtube")
+        service = uploader.build_service(creds)
+        try:
+            video_id = uploader.upload_video(
+                service, video, title, description,
+                cfg.youtube_category_id, cfg.youtube_privacy)
+        except uploader.UploadError as exc:
+            database.mark_upload_failed(conn, args.day, "youtube", str(exc)[-500:])
+            print(f"upload FAILED: {exc}", file=sys.stderr)
+            return 1
+        url = uploader.video_url(video_id)
+        database.mark_uploaded(conn, args.day, "youtube", video_id, url)
+        print(f"uploaded {args.day} -> {url}")
+    finally:
+        conn.close()
+    return 0
+
+
 def main(argv: list | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -599,6 +684,10 @@ def main(argv: list | None = None) -> int:
         return _cmd_compose(args, cfg)
     if args.command == "daily":
         return _cmd_daily(args, cfg)
+    if args.command == "auth-youtube":
+        return _cmd_auth_youtube(args, cfg)
+    if args.command == "upload":
+        return _cmd_upload(args, cfg)
     parser.print_help()
     return 2
 

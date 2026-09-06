@@ -36,6 +36,17 @@ CREATE TABLE IF NOT EXISTS daily (
     pct TEXT,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS uploads (
+    day TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    remote_id TEXT,
+    remote_url TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    uploaded_at TEXT,
+    PRIMARY KEY (day, platform)
+);
 """
 
 # Milestone 2 columns; applied idempotently to M1 databases.
@@ -266,3 +277,48 @@ def record_daily(conn: sqlite3.Connection, day: str, path: str, clips: int,
 def get_latest_daily(conn: sqlite3.Connection) -> dict | None:
     row = conn.execute("SELECT * FROM daily ORDER BY day DESC LIMIT 1").fetchone()
     return dict(row) if row else None
+
+
+# --- Uploads (Milestone 6) ---
+
+def get_upload(conn: sqlite3.Connection, day: str, platform: str) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM uploads WHERE day = ? AND platform = ?", (day, platform)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_uploading(conn: sqlite3.Connection, day: str, platform: str) -> None:
+    conn.execute(
+        "INSERT INTO uploads (day, platform, status, created_at) VALUES (?, ?, 'uploading', ?) "
+        "ON CONFLICT(day, platform) DO UPDATE SET status='uploading', error=NULL",
+        (day, platform, _utcnow_iso()),
+    )
+    conn.commit()
+
+
+def mark_uploaded(conn: sqlite3.Connection, day: str, platform: str,
+                  remote_id: str, remote_url: str) -> None:
+    conn.execute(
+        "UPDATE uploads SET status='uploaded', remote_id=?, remote_url=?, "
+        "uploaded_at=?, error=NULL WHERE day=? AND platform=?",
+        (remote_id, remote_url, _utcnow_iso(), day, platform),
+    )
+    conn.commit()
+
+
+def mark_upload_failed(conn: sqlite3.Connection, day: str, platform: str, error: str) -> None:
+    conn.execute(
+        "INSERT INTO uploads (day, platform, status, error, created_at) VALUES (?, ?, 'failed', ?, ?) "
+        "ON CONFLICT(day, platform) DO UPDATE SET status='failed', error=excluded.error",
+        (day, platform, error, _utcnow_iso()),
+    )
+    conn.commit()
+
+
+def recent_uploads(conn: sqlite3.Connection, limit: int = 5) -> list:
+    rows = conn.execute(
+        "SELECT day, platform, status, remote_url FROM uploads "
+        "ORDER BY created_at DESC LIMIT ?", (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]

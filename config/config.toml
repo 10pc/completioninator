@@ -63,3 +63,14 @@ completion_profile_url = "https://osucomplete.org/u/19333530/osu-ranked"
 # completion_pct = "0.73%"
 fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 daily = "/data/daily"
+
+[youtube]
+# Secrets ONLY via env (this file is committed):
+#   PIPELINE_YOUTUBE_CLIENT_ID / PIPELINE_YOUTUBE_CLIENT_SECRET
+# Token persists here after the one-time `auth-youtube` browser flow.
+token_path = "/data/db/youtube-token.json"
+# Unverified Google projects can only upload private/unlisted: start unlisted,
+# flip to public after the project audit passes.
+privacy = "unlisted"
+category_id = "20"
+title_template = "OSU! Completionist — {day} ({clips} maps)"

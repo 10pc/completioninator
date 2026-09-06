@@ -1,0 +1,203 @@
+"""YouTube uploader tests: scripted fake service, no network."""
+
+from pathlib import Path
+
+import pytest
+
+from osu_pipeline import database, uploader
+
+
+class _Resp:
+    def __init__(self, status):
+        self.status = status
+        self.reason = "x"
+
+
+def _http_error(status):
+    from googleapiclient.errors import HttpError
+
+    return HttpError(_Resp(status), b"boom")
+
+
+class _FakeInsert:
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = 0
+
+    def next_chunk(self):
+        self.calls += 1
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class _FakeService:
+    def __init__(self, script):
+        self._script = script
+        self.insert_kwargs = None
+        self.request = None
+
+    def videos(self):
+        return self
+
+    def insert(self, part, body, media_body):
+        self.insert_kwargs = {"part": part, "body": body}
+        self.request = _FakeInsert(self._script)
+        return self.request
+
+
+def _video(tmp_path: Path) -> Path:
+    p = tmp_path / "day.mp4"
+    p.write_bytes(b"\x00" * 1024)
+    return p
+
+
+def test_title_rendering():
+    assert uploader.render_title("OSU! Completionist — {day} ({clips} maps)",
+                                 "2026-09-06", 12, None) == \
+        "OSU! Completionist — 2026-09-06 (12 maps)"
+    assert uploader.video_url("abc") == "https://youtu.be/abc"
+
+
+def test_upload_success_and_metadata(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(uploader.time, "sleep", lambda s: None)
+    svc = _FakeService([(None, None), (None, {"id": "vid1"})])
+    vid = uploader.upload_video(svc, _video(tmp_path), "T", "D", "20", "unlisted")
+    assert vid == "vid1"
+    body = svc.insert_kwargs["body"]
+    assert body["snippet"]["title"] == "T"
+    assert body["status"]["privacyStatus"] == "unlisted"
+    assert svc.insert_kwargs["part"] == "snippet,status"
+
+
+def test_upload_retries_then_succeeds(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(uploader.time, "sleep", lambda s: None)
+    svc = _FakeService([_http_error(500), _http_error(503), (None, {"id": "vid2"})])
+    assert uploader.upload_video(svc, _video(tmp_path), "T", "D", "20", "unlisted") == "vid2"
+    assert svc.request.calls == 3
+
+
+def test_upload_fatal_error(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(uploader.time, "sleep", lambda s: None)
+    svc = _FakeService([_http_error(403)])
+    with pytest.raises(uploader.UploadError, match="403"):
+        uploader.upload_video(svc, _video(tmp_path), "T", "D", "20", "unlisted")
+
+
+def test_upload_state_transitions(tmp_path: Path):
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    try:
+        assert database.get_upload(conn, "2026-09-06", "youtube") is None
+        database.mark_uploading(conn, "2026-09-06", "youtube")
+        assert database.get_upload(conn, "2026-09-06", "youtube")["status"] == "uploading"
+        database.mark_uploaded(conn, "2026-09-06", "youtube", "vid9", "https://youtu.be/vid9")
+        row = database.get_upload(conn, "2026-09-06", "youtube")
+        assert row["status"] == "uploaded" and row["remote_id"] == "vid9"
+        database.mark_upload_failed(conn, "2026-09-07", "youtube", "nope")
+        assert database.get_upload(conn, "2026-09-07", "youtube")["status"] == "failed"
+        assert len(database.recent_uploads(conn)) == 2
+    finally:
+        conn.close()
+
+
+def _seed_daily(db: Path, out: Path) -> None:
+    database.init_db(db)
+    conn = database.connect(db)
+    database.record_daily(conn, "2026-09-06", str(out), 3, 100.0, None,
+                          {"passed": "1,133", "left": "147,163", "pct": "0.73%"})
+    conn.close()
+
+
+def _cfg(tmp_path: Path) -> Path:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[paths]\n"
+        f"database = {str(tmp_path / 'p.sqlite')!r}\n"
+        "[youtube]\n"
+        'privacy = "unlisted"\n'
+    )
+    return cfg
+
+
+def test_cli_upload_happy_path_and_duplicate_skip(tmp_path: Path, monkeypatch, capsys):
+    from osu_pipeline.cli import main
+
+    out = tmp_path / "day.mp4"
+    out.write_bytes(b"\x00" * 16)
+    db = tmp_path / "p.sqlite"
+    _seed_daily(db, out)
+    cfg = _cfg(tmp_path)
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_ID", "cid")
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_SECRET", "sec")
+
+    calls = {"n": 0}
+
+    class _Creds:
+        pass
+
+    monkeypatch.setattr(uploader, "load_credentials", lambda p: _Creds())
+    monkeypatch.setattr(uploader, "build_service", lambda c: _FakeService([(None, {"id": "v1"})]))
+    monkeypatch.setattr(
+        uploader, "upload_video",
+        lambda svc, path, title, desc, cat, priv: (calls.__setitem__("n", calls["n"] + 1), "v1")[1])
+
+    assert main(["--config", str(cfg), "upload", "2026-09-06"]) == 0
+    assert "youtu.be/v1" in capsys.readouterr().out
+    # second run skips without calling upload again
+    assert main(["--config", str(cfg), "upload", "2026-09-06"]) == 0
+    assert "already uploaded" in capsys.readouterr().out
+    assert calls["n"] == 1
+    # --force re-uploads
+    assert main(["--config", str(cfg), "upload", "2026-09-06", "--force"]) == 0
+    assert calls["n"] == 2
+
+
+def test_cli_upload_failure_recorded(tmp_path: Path, monkeypatch, capsys):
+    from osu_pipeline.cli import main
+
+    out = tmp_path / "day.mp4"
+    out.write_bytes(b"\x00" * 16)
+    db = tmp_path / "p.sqlite"
+    _seed_daily(db, out)
+    cfg = _cfg(tmp_path)
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_ID", "cid")
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_SECRET", "sec")
+
+    class _Creds:
+        pass
+
+    monkeypatch.setattr(uploader, "load_credentials", lambda p: _Creds())
+    monkeypatch.setattr(uploader, "build_service", lambda c: object())
+
+    def _boom(*a, **k):
+        raise uploader.UploadError("quotaExceeded")
+
+    monkeypatch.setattr(uploader, "upload_video", _boom)
+    assert main(["--config", str(cfg), "upload", "2026-09-06"]) == 1
+    assert "quotaExceeded" in capsys.readouterr().err
+    conn = database.connect(db)
+    try:
+        assert database.get_upload(conn, "2026-09-06", "youtube")["status"] == "failed"
+    finally:
+        conn.close()
+
+
+def test_cli_upload_missing_pieces(tmp_path: Path, monkeypatch, capsys):
+    from osu_pipeline.cli import main
+
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    cfg = _cfg(tmp_path)
+    # no daily row
+    assert main(["--config", str(cfg), "upload", "2026-09-06"]) == 2
+    # daily row but no credentials configured
+    conn = database.connect(db)
+    out = tmp_path / "day.mp4"
+    out.write_bytes(b"\x00" * 16)
+    database.record_daily(conn, "2026-09-06", str(out), 1, 10.0, None, None)
+    conn.close()
+    assert main(["--config", str(cfg), "upload", "2026-09-06"]) == 2
+    assert "client ID" in capsys.readouterr().err

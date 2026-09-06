@@ -123,6 +123,27 @@ Only `.osr` files carry a beatmap MD5 (no beatmap id inside), so hash
 resolution is the only replay-native key — the manual escape hatch is
 `render --beatmapset-id <id>` when you know the set.
 
+YouTube uploads (one-time setup, then automatic):
+
+```bash
+# 1. Google Cloud: project + YouTube Data API v3 + Desktop OAuth client
+#    (consent scope: youtube.upload only). Secrets stay in env, never in git:
+#    compose.override.yml environment:
+#      PIPELINE_YOUTUBE_CLIENT_ID: "...apps.googleusercontent.com"
+#      PIPELINE_YOUTUBE_CLIENT_SECRET: "..."
+# 2. One-time browser authorization ON the server (VNC browser):
+docker compose run --rm -p 127.0.0.1:8080:8080 pipeline auth-youtube --port 8080
+# 3. Upload any daily (skips already-uploaded unless --force):
+docker compose run --rm pipeline upload 2026-09-06
+docker compose run --rm pipeline status   # shows recent uploads
+```
+
+Uploads default to `unlisted` (unverified Google projects can't publish
+public — flip `privacy` after the project audit). Transfers are resumable
+with backoff, and every upload is recorded in SQLite so restarts can't
+duplicate. Refresh tokens renew silently; re-run `auth-youtube` only if
+Google revokes access.
+
 Failure triage (`progress` shows the short form, `/data/logs/job-<id>.log`
 the full danser output):
 
