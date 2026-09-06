@@ -187,9 +187,13 @@ Gaming PC sync — Windows/SMB (operator runs on gaming PC):
 Only new `.osr` files are copied (never overwritten/deleted); they stage in
 `staging/` then move into place so the scanner never sees a partial file.
 
+Hands-free sync — a watcher runs at logon and syncs ~30s after each new
+replay (plus a periodic safety sweep in case an event is ever missed):
+
 ```powershell
-# later: hourly background sync (scheduling deferred for now)
-# schtasks /create /tn OsuReplaySync /tr "powershell -File C:\path\to\sync-replays.ps1" /sc HOURLY
+.\scripts\install-watcher.ps1 -Source 'C:\Users\user\osu!\Replays' -Destination '\\nas\osu\replays'
+# check it: Get-ScheduledTask OsuReplayWatcher; Get-Content $env:TEMP\osu-watch-replays.log -Tail 5
+# remove it: .\scripts\install-watcher.ps1 -Uninstall
 ```
 
 Gaming PC sync — Linux/rsync alternative:
