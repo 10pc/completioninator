@@ -135,6 +135,32 @@ def render_title(template: str, day: str, clips: int, span: str | None) -> str:
     return template.format(day=day, clips=clips, span=span or day)
 
 
+def render_description(template: str, day: str, clips: int, span: str | None,
+                       passed: str | None = None, left: str | None = None,
+                       pct: str | None = None) -> str:
+    """Fill the YouTube description template.
+
+    {remaining} is derived as total pool minus passed (e.g. "147,148" minus
+    "1,166" -> "145,982"). When no completion snapshot exists, the stats
+    lines are dropped instead of rendering as blanks.
+    """
+    remaining = ""
+    if passed and left:
+        try:
+            remaining = f"{int(left.replace(',', '')) - int(passed.replace(',', '')):,}"
+        except ValueError:
+            remaining = ""
+    text = template.format(day=day, clips=clips, span=span or day,
+                           passed=passed or "", left=left or "",
+                           pct=pct or "", remaining=remaining)
+    if not passed:
+        text = "\n".join(
+            line for line in text.splitlines()
+            if not line.startswith("Completion at compose time:")
+            and not line.startswith("Remaining:"))
+    return text.strip()
+
+
 def upload_video(service, file_path: Path, title: str, description: str,
                  category_id: str, privacy: str, chunks_mb: int = 8) -> str:
     """Resumable upload with backoff. Returns the YouTube video ID."""

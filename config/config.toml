@@ -90,6 +90,15 @@ token_path = "/data/db/youtube-token.json"
 privacy = "unlisted"
 category_id = "20"
 title_template = "osu!completionist journey — {day} ({clips} passes)"
+# Placeholders: {day} {clips} {span} {passed} {left} {pct} {remaining}
+# ({left} is the total pool, {remaining} = pool minus passed).
+description_template = """osu!standard ranked only - {clips} passes ({span})
+Completion at compose time: {passed}/{left} ({pct})
+Remaining: {remaining} maps
+
+Rendered with danser; composed by the completioninator pipeline.
+
+#osu #osu! #osugame #osucompletionist #osucompletion #rhythmgame #gaming"""
 # Delete per-map renders once their day is safely on YouTube (replays, DB
 # rows, dailies, songs and logs are always kept). Disable to keep everything.
 prune_after_upload = true

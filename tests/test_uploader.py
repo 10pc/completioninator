@@ -60,6 +60,27 @@ def test_title_rendering():
     assert uploader.video_url("abc") == "https://youtu.be/abc"
 
 
+def test_description_rendering():
+    from osu_pipeline.config import DEFAULT_YOUTUBE_DESCRIPTION
+
+    desc = uploader.render_description(
+        DEFAULT_YOUTUBE_DESCRIPTION, "2026-09-07", 108,
+        "2026-03-29..2026-09-05",
+        passed="1,166", left="147,148", pct="0.79%")
+    assert desc.splitlines()[0] == \
+        "osu!standard ranked only - 108 passes (2026-03-29..2026-09-05)"
+    assert "Completion at compose time: 1,166/147,148 (0.79%)" in desc
+    assert "Remaining: 145,982 maps" in desc
+    assert "Rendered with danser" in desc
+    assert desc.rstrip().endswith("#gaming")
+    # no snapshot: stats lines drop instead of rendering blank
+    bare = uploader.render_description(
+        DEFAULT_YOUTUBE_DESCRIPTION, "2026-09-06", 3, None)
+    assert "Completion at compose time" not in bare
+    assert "Remaining:" not in bare
+    assert "3 passes (2026-09-06)" in bare
+
+
 def test_upload_success_and_metadata(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(uploader.time, "sleep", lambda s: None)
     svc = _FakeService([(None, None), (None, {"id": "vid1"})])

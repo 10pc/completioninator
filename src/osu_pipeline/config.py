@@ -12,6 +12,16 @@ DEFAULT_CONFIG_PATHS = (
     Path(__file__).resolve().parents[2] / "config" / "config.toml",
 )
 
+DEFAULT_YOUTUBE_DESCRIPTION = (
+    "osu!standard ranked only - {clips} passes ({span})\n"
+    "Completion at compose time: {passed}/{left} ({pct})\n"
+    "Remaining: {remaining} maps\n"
+    "\n"
+    "Rendered with danser; composed by the completioninator pipeline.\n"
+    "\n"
+    "#osu #osu! #osugame #osucompletionist #osucompletion #rhythmgame #gaming"
+)
+
 
 @dataclass(frozen=True)
 class PipelineConfig:
@@ -70,6 +80,7 @@ class PipelineConfig:
     youtube_privacy: str = "unlisted"
     youtube_category_id: str = "20"
     youtube_title_template: str = "OSU! Completionist — {day} ({clips} maps)"
+    youtube_description_template: str = DEFAULT_YOUTUBE_DESCRIPTION
     prune_after_upload: bool = True
     # instagram (Milestone 7; token via env ONLY)
     instagram_user_id: str | None = None
@@ -133,6 +144,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     youtube_client_secret = os.environ.get("PIPELINE_YOUTUBE_CLIENT_SECRET")
     youtube_token_path = os.environ.get("PIPELINE_YOUTUBE_TOKEN_PATH")
     youtube_privacy = os.environ.get("PIPELINE_YOUTUBE_PRIVACY")
+    youtube_description_template = os.environ.get("PIPELINE_YOUTUBE_DESCRIPTION_TEMPLATE")
     instagram_user_id = os.environ.get("PIPELINE_INSTAGRAM_USER_ID")
     instagram_token = os.environ.get("PIPELINE_INSTAGRAM_TOKEN")
     render_timeout = os.environ.get("PIPELINE_RENDER_TIMEOUT")
@@ -216,6 +228,12 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_category_id = youtube.get("category_id", "20")
         youtube_title_template = youtube.get(
             "title_template", "OSU! Completionist — {day} ({clips} maps)")
+        if youtube_description_template is not None:
+            # env override: honor literal \n escapes for one-line shells
+            youtube_description_template = youtube_description_template.replace("\\n", "\n")
+        else:
+            youtube_description_template = youtube.get(
+                "description_template", DEFAULT_YOUTUBE_DESCRIPTION)
         _prune_raw = os.environ.get("PIPELINE_PRUNE_AFTER_UPLOAD")
         if _prune_raw is None:
             prune_after_upload = bool(youtube.get("prune_after_upload", True))
@@ -254,6 +272,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         completion_pct = os.environ.get("PIPELINE_COMPLETION_PCT", "")
         youtube_token_path = youtube_token_path or "/data/db/youtube-token.json"
         youtube_privacy = youtube_privacy or "unlisted"
+        youtube_description_template = (
+            youtube_description_template or DEFAULT_YOUTUBE_DESCRIPTION)
         youtube_category_id, youtube_title_template = "20", "OSU! Completionist — {day} ({clips} maps)"
         prune_after_upload = os.environ.get("PIPELINE_PRUNE_AFTER_UPLOAD", "true").strip().lower() in (
             "1", "true", "yes")
@@ -315,6 +335,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_privacy=youtube_privacy or "unlisted",
         youtube_category_id=youtube_category_id,
         youtube_title_template=youtube_title_template,
+        youtube_description_template=youtube_description_template,
         prune_after_upload=prune_after_upload,
         instagram_user_id=instagram_user_id,
         instagram_token=instagram_token,

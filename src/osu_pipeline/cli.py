@@ -795,13 +795,9 @@ def _upload_youtube(conn, cfg, args, row: dict, video: Path) -> int:
         return 2
     title = uploader.render_title(cfg.youtube_title_template, args.day,
                                   row["clips"], row["span"])
-    description = (
-        f"osu!standard completionist daily grid — {row['clips']} maps "
-        f"({row['span'] or args.day}).\n"
-        + (f"Completion at compose time: {row['passed']}/{row['left']} ({row['pct']}).\n"
-           if row["passed"] else "")
-        + "Rendered with danser; composed by the completioninator pipeline."
-    )
+    description = uploader.render_description(
+        cfg.youtube_description_template, args.day, row["clips"], row["span"],
+        passed=row["passed"], left=row["left"], pct=row["pct"])
     database.mark_uploading(conn, args.day, "youtube")
     service = uploader.build_service(creds)
     try:
