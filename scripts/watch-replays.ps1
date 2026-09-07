@@ -32,6 +32,21 @@ if (-not (Test-Path -LiteralPath $Source)) { throw "Source not found: $Source" }
 $syncScript = Join-Path $PSScriptRoot "sync-replays.ps1"
 if (-not (Test-Path -LiteralPath $syncScript)) { throw "sync script not found: $syncScript" }
 
+# Single instance: the hourly watchdog trigger must not stack a second copy.
+# Held for the process lifetime; an abandoned mutex means the previous owner
+# died, which is exactly when a new instance SHOULD proceed.
+$mutex = New-Object System.Threading.Mutex($false, "Global\OsuReplayWatcher")
+$acquired = $false
+try {
+  $acquired = $mutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+  $acquired = $true
+}
+if (-not $acquired) {
+  Write-Output "another watcher instance is already running; exiting"
+  exit 0
+}
+
 function Write-WatchLog([string]$Message) {
   $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Message"
   Write-Output $line

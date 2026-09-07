@@ -26,12 +26,17 @@ if ([string]::IsNullOrWhiteSpace($Source)) { throw "Source not set. Pass -Source
 if ([string]::IsNullOrWhiteSpace($Destination)) { throw "Destination not set. Pass -Destination or set `$env:NAS_REPLAYS_DEST." }
 
 $watcher = Join-Path $PSScriptRoot "watch-replays.ps1"
-$argList = "-NoProfile -ExecutionPolicy Bypass -File `"$watcher`" " +
+$argList = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watcher`" " +
            "-Source `"$Source`" -Destination `"$Destination`""
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argList
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$triggerLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+# Watchdog: hourly forever would exceed the scheduler's duration range, so
+# repeat for 30 days at a time (logon trigger covers reboots regardless).
+$triggerHourly = New-ScheduledTaskTrigger -Once -At (Get-Date).Date `
+  -RepetitionInterval (New-TimeSpan -Hours 1) `
+  -RepetitionDuration (New-TimeSpan -Days 30)
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($triggerLogon, $triggerHourly) `
   -Settings $settings -Description "Sync new osu! replays to NAS" -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 Write-Output "installed and started task $TaskName"
