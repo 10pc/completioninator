@@ -149,11 +149,13 @@ def test_segment_graph_fade_out_param():
     assert "fade=t=out:st=59.000:d=1.000" in faded
 
 
-def test_audio_graph_stacks_all_voiced():
+def test_audio_graph_stacks_loud():
     clips = [_clip(1, 100.0), _clip(2, 60.0)]
     script, ok = compositor.build_audio_graph(clips, 100.0, 106.0)
     assert ok is True
     assert "amix=inputs=2" in script
+    assert "normalize=0" in script  # loud stacked wall, not leveled static
+    assert "alimiter" in script  # catches digital clipping only
     assert "[0:a]" in script and "[1:a]" in script
     assert "afade=t=out:st=98.000:d=2" in script
     assert "apad=whole_dur=106.000" in script

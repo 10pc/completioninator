@@ -193,7 +193,18 @@ Uploads default to `unlisted` (unverified Google projects can't publish
 public — flip `privacy` after the project audit). Transfers are resumable
 with backoff, and every upload is recorded in SQLite so restarts can't
 duplicate. Refresh tokens renew silently; re-run `auth-youtube` only if
-Google revokes access.
+Google revokes access. The stacked audio mix stays loud on purpose
+(`amix` without normalization, limiter only catching digital clipping).
+
+Retire old eras from future grids without deleting anything:
+
+```bash
+docker compose run --rm pipeline exclude --before 2026-09-04 --dry-run
+docker compose run --rm pipeline exclude --before 2026-09-04
+```
+
+`excluded` rows never surface in claims, compose input, or requeue — they
+just sit in history. Replays played again later come back as new rows.
 
 Storage: per-map renders are deleted automatically once their day is safely
 on YouTube (`[youtube] prune_after_upload`, on by default). Replays, DB

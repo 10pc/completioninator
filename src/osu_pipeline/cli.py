@@ -81,6 +81,11 @@ def _build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--dry-run", action="store_true", help="Report without deleting")
     pr.add_argument("--force", action="store_true", help="Prune a day with no upload record")
     pr.add_argument("--db", default=None, help="Override database path")
+
+    ex = sub.add_parser("exclude", help="Park old testing-era replays out of future grids")
+    ex.add_argument("--before", required=True, help="Exclude rendered/composited rows with day < YYYY-MM-DD")
+    ex.add_argument("--dry-run", action="store_true", help="Report without changing")
+    ex.add_argument("--db", default=None, help="Override database path")
     return p
 
 
@@ -112,6 +117,7 @@ def _cmd_status(args, cfg) -> int:
         print(f"  rendered:     {counts.get('rendered', 0)}")
         print(f"  failed:       {counts.get('failed', 0)}")
         print(f"  unrenderable: {counts.get('unrenderable', 0)}")
+        print(f"  excluded:     {counts.get('excluded', 0)}")
         print(f"  composited:   {counts.get('composited', 0)}")
         today = datetime.now(timezone.utc).date().isoformat()
         day = database.get_day_summary(conn, today)
@@ -464,7 +470,8 @@ def _cmd_progress(args, cfg) -> int:
         print(f"Day {day}: total={total} pending={summary.get('pending', 0)} "
               f"rendering={summary.get('rendering', 0)} rendered={rendered} "
               f"failed={summary.get('failed', 0)} "
-              f"unrenderable={summary.get('unrenderable', 0)} ({pct:.0f}% rendered)")
+              f"unrenderable={summary.get('unrenderable', 0)} "
+              f"excluded={summary.get('excluded', 0)} ({pct:.0f}% rendered)")
         rendering = database.get_day_jobs(conn, day, "rendering")
         for j in rendering:
             print(f"  now rendering: job-{j['id']} {j['path']} (attempt {j['attempts']})")
@@ -706,6 +713,23 @@ def _cmd_daily(args, cfg) -> int:
     return 0 if all(s != "failed" for s in results.values()) else 1
 
 
+def _cmd_exclude(args, cfg) -> int:
+    db_path = Path(args.db) if args.db else cfg.database_path
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    try:
+        rows = database.exclude_before(conn, args.before, dry_run=args.dry_run)
+    finally:
+        conn.close()
+    verb = "would exclude" if args.dry_run else "excluded"
+    print(f"{verb} {len(rows)} replays with day < {args.before}")
+    for r in rows[:10]:
+        print(f"  {r['day']} {r['path']}")
+    if len(rows) > 10:
+        print(f"  ... and {len(rows) - 10} more")
+    return 0
+
+
 def _cmd_auth_youtube(args, cfg) -> int:
     from . import uploader
 
@@ -914,6 +938,8 @@ def main(argv: list | None = None) -> int:
         return _cmd_upload(args, cfg)
     if args.command == "prune":
         return _cmd_prune(args, cfg)
+    if args.command == "exclude":
+        return _cmd_exclude(args, cfg)
     parser.print_help()
     return 2
 

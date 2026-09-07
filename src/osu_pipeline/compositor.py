@@ -365,7 +365,11 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float) -
         chains.append("[a0]anull[amix]")
     else:
         labels = "".join(f"[a{i}]" for i in range(len(voiced)))
-        chains.append(f"{labels}amix=inputs={len(voiced)}:duration=longest:normalize=1[amix]")
+        # normalize=0 keeps the stacked wall loud (normalize=1 divides by the
+        # track count and comes out as quiet static); alimiter only catches
+        # digital clipping without leveling the mix down.
+        chains.append(f"{labels}amix=inputs={len(voiced)}:duration=longest:normalize=0[amixed]")
+        chains.append("[amixed]alimiter=limit=0.95[amix]")
     tail = f",afade=t=out:st={max(0.0, content_len - 2):.3f}:d=2" if content_len > 2 else ""
     chains.append(f"[amix]aformat=sample_rates=48000:channel_layouts=stereo{tail},"
                   f"apad=whole_dur={total_len:.3f}[aout]")

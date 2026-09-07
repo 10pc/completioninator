@@ -135,7 +135,8 @@ def get_counts(conn: sqlite3.Connection) -> dict:
     counts = {r["status"]: r["n"] for r in rows}
     total = conn.execute("SELECT COUNT(*) AS n FROM replays").fetchone()["n"]
     counts["discovered"] = total
-    for s in ("pending", "rendering", "rendered", "failed", "unrenderable", "composited"):
+    for s in ("pending", "rendering", "rendered", "failed", "unrenderable", "excluded",
+              "composited"):
         counts.setdefault(s, 0)
     return counts
 
@@ -260,6 +261,26 @@ def mark_unrenderable(conn: sqlite3.Connection, replay_id: int, error: str) -> N
         (error, replay_id),
     )
     conn.commit()
+
+
+def exclude_before(conn: sqlite3.Connection, day: str, dry_run: bool = False) -> list[dict]:
+    """Park rendered/composited rows older than a day as excluded (testing eras,
+    replays you never want in a grid again). Never touches pending/failed/etc.
+    Returns the affected rows (without committing when dry_run)."""
+    rows = conn.execute(
+        "SELECT id, path, day, status FROM replays "
+        "WHERE day < ? AND status IN ('rendered', 'composited') ORDER BY day, id",
+        (day,),
+    ).fetchall()
+    out = [dict(r) for r in rows]
+    if not dry_run and out:
+        placeholders = ",".join("?" for _ in out)
+        conn.execute(
+            f"UPDATE replays SET status = 'excluded' WHERE id IN ({placeholders})",
+            [r["id"] for r in out],
+        )
+        conn.commit()
+    return out
 
 
 # --- Daily batches (Milestone 4) ---
