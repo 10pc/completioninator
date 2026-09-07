@@ -106,6 +106,61 @@ def test_daily_renders_then_composes(tmp_path: Path, monkeypatch, capsys):
         conn.close()
 
 
+def test_daily_composes_leftover_uncomposited(tmp_path: Path, monkeypatch, capsys):
+    """Queue drained by earlier runs must still produce a video (the 03:00 bug)."""
+    cfg = _base_cfg(tmp_path)
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    rdir = tmp_path / "rendered" / "2026-09-06"
+    rdir.mkdir(parents=True)
+    for i in range(2):
+        (rdir / f"{i}.mp4").write_bytes(b"vid")
+        database.insert_replay(
+            conn, path=f"p{i}.osr", sha256=f"s{i}", size=1, mtime_ns=1,
+            played_at="2026-09-06T00:00:00+00:00", day="2026-09-06")
+        rid = conn.execute("SELECT id FROM replays WHERE path = ?",
+                           (f"p{i}.osr",)).fetchone()["id"]
+        database.mark_rendered(conn, rid, str(rdir / f"{i}.mp4"))
+    conn.close()
+
+    import osu_pipeline.cli as cli_mod
+    from osu_pipeline import completion as completion_mod
+
+    stub = _stub_renderer(tmp_path)
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: stub)
+    monkeypatch.setattr(compositor, "check_binaries", lambda: ("ffmpeg", "ffprobe"))
+
+    def _probe(ffprobe, src):
+        return compositor.Clip(id=-1, path=Path(src), day=None, duration=60.0, has_audio=False)
+
+    monkeypatch.setattr(compositor, "probe_clip", _probe)
+    monkeypatch.setattr(
+        compositor, "encode_segment",
+        lambda ffmpeg, seg, graph, out_path, *a: Path(out_path).write_bytes(b"seg"))
+    monkeypatch.setattr(
+        compositor, "concat_segments",
+        lambda ffmpeg, segs, out_path, workdir, timeout=600: Path(out_path).write_bytes(b"joined"))
+
+    def _mux(ffmpeg, video, audio, out_path, timeout=600):
+        assert audio is None
+        Path(out_path).write_bytes(b"final")
+
+    monkeypatch.setattr(compositor, "mux_audio_video", _mux)
+    monkeypatch.setattr(
+        completion_mod, "fetch_completion",
+        lambda url, timeout=30: (_ for _ in ()).throw(completion_mod.CompletionError("off")))
+    # nothing pending: this run renders zero, compose must still fire
+    assert main(["--config", str(cfg), "daily", "--limit", "5"]) == 0
+    out = capsys.readouterr().out
+    assert "rendered=0" in out and "composed=ok" in out
+    conn = database.connect(db)
+    try:
+        assert database.get_counts(conn)["composited"] == 2
+    finally:
+        conn.close()
+
+
 def test_daily_upload_skips_unconfigured_platforms(tmp_path: Path, monkeypatch, capsys):
     cfg = _base_cfg(tmp_path)
     stub = _stub_renderer(tmp_path)

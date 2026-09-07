@@ -680,7 +680,15 @@ def _cmd_daily(args, cfg) -> int:
         return rc
 
     composed = "skipped"
-    if rstats["rendered"] > 0:
+    # Compose on fresh renders OR leftover uncomposited rows: the :30 render
+    # cron usually drains the queue before 03:00, and gating on this run's
+    # renders alone would silently skip the whole day's video.
+    conn = database.connect(cfg.database_path)
+    try:
+        leftover = len(database.get_uncomposited(conn))
+    finally:
+        conn.close()
+    if rstats["rendered"] > 0 or leftover > 0:
         crc = _cmd_compose(argparse.Namespace(db=str(cfg.database_path), max_clips=args.max_clips), cfg)
         composed = "ok" if crc == 0 else "failed"
         print(summary + f" composed={composed}")
