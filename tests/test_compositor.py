@@ -170,6 +170,21 @@ def test_audio_graph_single_and_none():
     assert compositor.build_audio_graph(mute, 20.0, 26.0) == ("", False)
 
 
+def test_audio_mix_uses_longest_n_tracks():
+    clips = [_clip(i, float(10 + i)) for i in range(12)]  # 10s..21s
+    picked = compositor.select_mix_clips(clips, 10)
+    assert [c.duration for c in picked] == sorted(
+        (c.duration for c in clips), reverse=True)[:10]
+    script, ok = compositor.build_audio_graph(clips, 21.0, 27.0, max_tracks=10)
+    assert ok is True
+    assert "amix=inputs=10" in script
+    assert "normalize=0" in script  # original volume kept
+    assert "[10:a]" not in script  # only 10 inputs wired
+    # opt-out mixes everything, as before
+    script_all, _ = compositor.build_audio_graph(clips, 21.0, 27.0, max_tracks=0)
+    assert "amix=inputs=12" in script_all
+
+
 def test_outro_graph_text_fades():
     graph = compositor.build_outro_graph(1920, 1080, 6.0, "1,133/147,163", "0.73%",
                                          "/font.ttf", 72, 54)

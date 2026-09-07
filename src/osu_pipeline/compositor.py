@@ -348,14 +348,26 @@ def build_morph_graph(span: MorphSpan, clips_by_id: dict, width: int, grid_h: in
     return ";\n".join(chains) + "\n", ordered
 
 
-def build_audio_graph(clips: list[Clip], content_len: float, total_len: float) -> tuple[str, bool]:
-    """One continuous mix of every clip that has audio (full timeline, no seeks).
+def select_mix_clips(clips: list[Clip], max_tracks: int) -> list[Clip]:
+    """Voiced clips for the audio mix, longest first, capped at max_tracks.
+
+    Stacking all ~100 walls is pure CPU burn for mud; the longest maps carry
+    the video anyway (they span the most segments). max_tracks <= 0 mixes all.
+    """
+    voiced = [c for c in clips if c.has_audio]
+    voiced.sort(key=lambda c: c.duration, reverse=True)
+    return voiced if max_tracks <= 0 else voiced[:max_tracks]
+
+
+def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
+                      max_tracks: int = 10) -> tuple[str, bool]:
+    """One continuous mix of the longest voiced clips (full timeline, no seeks).
 
     Finished clips fall silent as their inputs end, so the mix naturally
     thins out exactly like the grid. The tail fades out over the final 2s of
     content, then silence pads through the outro. Returns (script, has_audio).
     """
-    voiced = [c for c in clips if c.has_audio]
+    voiced = select_mix_clips(clips, max_tracks)
     if not voiced:
         return "", False
     chains = []
@@ -377,8 +389,8 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float) -
 
 
 def encode_audio_mix(ffmpeg: str, clips: list[Clip], graph_file: Path,
-                     out_path: Path, timeout: int) -> None:
-    voiced = [c for c in clips if c.has_audio]
+                     out_path: Path, timeout: int, max_tracks: int = 10) -> None:
+    voiced = select_mix_clips(clips, max_tracks)
     cmd = ["ffmpeg", "-y", "-v", "error"]
     for c in voiced:
         cmd += ["-i", str(c.path)]

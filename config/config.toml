@@ -56,6 +56,9 @@ header_height = 80
 header_extra = ""
 # rolling batch keeps the longest N rendered-but-uncomposited clips
 max_clips = 250
+# audio mix uses only the longest N voiced clips (0 = all); the wall thins
+# out like the grid as short maps end, and full-stack mixing is pure CPU burn
+audio_max_tracks = 10
 preset = "veryfast"
 crf = 23
 compose_timeout = 1800

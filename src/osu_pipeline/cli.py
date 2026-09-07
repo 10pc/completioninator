@@ -618,11 +618,13 @@ def _cmd_compose(args, cfg) -> int:
                                     cfg.video_preset, cfg.video_crf, 600)
             seg_paths.append(outro_path)
         compositor.concat_segments(ffmpeg, seg_paths, video_tmp, workdir)
-        audio_script, has_audio = compositor.build_audio_graph(kept, content_len, total_len)
+        audio_script, has_audio = compositor.build_audio_graph(
+            kept, content_len, total_len, max_tracks=cfg.audio_max_tracks)
         if has_audio:
             (workdir / "audio.txt").write_text(audio_script)
             compositor.encode_audio_mix(ffmpeg, kept, workdir / "audio.txt", audio_tmp,
-                                        min(max(300, int(total_len)), cfg.compose_timeout))
+                                        min(max(300, int(total_len)), cfg.compose_timeout),
+                                        max_tracks=cfg.audio_max_tracks)
             compositor.mux_audio_video(ffmpeg, video_tmp, audio_tmp, out_path)
         else:
             compositor.mux_audio_video(ffmpeg, video_tmp, None, out_path)

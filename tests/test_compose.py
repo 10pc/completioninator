@@ -61,7 +61,7 @@ def test_compose_happy_path(tmp_path: Path, monkeypatch, capsys):
         lambda ffmpeg, segs, out_path, workdir, timeout=600: Path(out_path).write_bytes(b"joined"))
     monkeypatch.setattr(
         compositor, "encode_audio_mix",
-        lambda ffmpeg, clips, graph, out_path, timeout: Path(out_path).write_bytes(b"mix"))
+        lambda ffmpeg, clips, graph, out_path, timeout, max_tracks=10: Path(out_path).write_bytes(b"mix"))
     monkeypatch.setattr(
         compositor, "mux_audio_video",
         lambda ffmpeg, video, audio, out_path, timeout=600: Path(out_path).write_bytes(b"final"))
