@@ -55,7 +55,7 @@ header_height = 80
 # appended to the header line; future home for API-sourced data
 header_extra = ""
 # rolling batch keeps the longest N rendered-but-uncomposited clips
-max_clips = 12
+max_clips = 250
 preset = "veryfast"
 crf = 23
 compose_timeout = 1800
