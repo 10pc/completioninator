@@ -171,6 +171,28 @@ def test_transient_beatmap_failure_requeues(tmp_path: Path, monkeypatch, capsys)
         conn.close()
 
 
+def test_missing_source_requeues_not_fails(tmp_path: Path, monkeypatch, capsys):
+    """NAS blip (source gone at claim time) must not terminally fail the row."""
+    import osu_pipeline.cli as cli_mod
+
+    db = tmp_path / "p.sqlite"
+    (tmp_path / "replays").mkdir()  # seeded row points at a file that isn't there
+    _seed_row(db)
+    cfg = _write_cfg(tmp_path)
+    stub = _stub_renderer(tmp_path)
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: stub)
+    assert main(["--config", str(cfg), "render", "--limit", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "requeued" in out and "retried=1" in out
+    conn = database.connect(db)
+    try:
+        row = conn.execute("SELECT status, error FROM replays").fetchone()
+        assert row["status"] == "pending"
+        assert "transient" in row["error"]
+    finally:
+        conn.close()
+
+
 def test_danser_beatmap_not_found_diagnosis(tmp_path: Path, monkeypatch):
     from osu_pipeline.cli import _diagnose_render_failure
     from osu_pipeline.renderer import RenderResult

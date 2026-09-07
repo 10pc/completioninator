@@ -346,18 +346,21 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
 
     src = cfg.replays_dir / job["path"]
     if not src.exists():
-        database.mark_failed(conn, jid, f"source missing: {src}")
-        stats["failed"] += 1
-        print(f"[{tag}] source missing: {job['path']}")
+        # Transient class (NAS unmount, SMB blip): back to pending, attempts
+        # cap still bounds a truly lost file. A terminal mark here would
+        # permanently kill every claimed row on one storage hiccup.
+        database.requeue_one(conn, jid, f"transient: source missing: {src}")
+        stats["retried"] += 1
+        print(f"[{tag}] source missing, requeued: {job['path']}")
         return
 
     scratch = cfg.working_dir / f"{tag}.osr"
     try:
         shutil.copyfile(src, scratch)
     except OSError as exc:
-        database.mark_failed(conn, jid, f"scratch copy failed: {exc}")
-        stats["failed"] += 1
-        print(f"[{tag}] scratch copy failed: {exc}")
+        database.requeue_one(conn, jid, f"transient: scratch copy failed: {exc}")
+        stats["retried"] += 1
+        print(f"[{tag}] scratch copy failed, requeued: {exc}")
         return
 
     bhash = job.get("beatmap_hash") or read_beatmap_hash(scratch)
@@ -430,9 +433,9 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
     try:
         shutil.move(str(result.output), dest)
     except OSError as exc:
-        database.mark_failed(conn, jid, f"collect output failed: {exc}")
-        stats["failed"] += 1
-        print(f"[{tag}] collect failed: {exc}")
+        database.requeue_one(conn, jid, f"transient: collect output failed: {exc}")
+        stats["retried"] += 1
+        print(f"[{tag}] collect failed, requeued: {exc}")
         return
     database.mark_rendered(conn, jid, dest.as_posix())
     stats["rendered"] += 1
