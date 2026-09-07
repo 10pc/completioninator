@@ -26,9 +26,13 @@ if ([string]::IsNullOrWhiteSpace($Source)) { throw "Source not set. Pass -Source
 if ([string]::IsNullOrWhiteSpace($Destination)) { throw "Destination not set. Pass -Destination or set `$env:NAS_REPLAYS_DEST." }
 
 $watcher = Join-Path $PSScriptRoot "watch-replays.ps1"
-$argList = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watcher`" " +
+# conhost --headless: -WindowStyle Hidden is ignored when Windows Terminal is
+# the default console host (it still opens a visible tab). Hosting the shell
+# under a headless conhost never shows a window, hourly trigger included.
+$argList = "-NoProfile -ExecutionPolicy Bypass -File `"$watcher`" " +
            "-Source `"$Source`" -Destination `"$Destination`""
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argList
+$action = New-ScheduledTaskAction -Execute "conhost.exe" `
+  -Argument "--headless powershell.exe $argList"
 $triggerLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # Watchdog: hourly forever would exceed the scheduler's duration range, so
 # repeat for 30 days at a time (logon trigger covers reboots regardless).
