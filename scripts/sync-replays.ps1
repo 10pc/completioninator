@@ -22,6 +22,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Serialize with the background watcher (and concurrent manual runs): they
+# share one staging dir, so overlapping runs race on the same files.
+# The watcher holds Global\OsuReplayWatcher for its lifetime; a manual run
+# waits for any in-flight sync instead of colliding with it.
+$syncMutex = New-Object System.Threading.Mutex($false, "Global\OsuReplaySync")
+$syncAcquired = $false
+try {
+  $syncAcquired = $syncMutex.WaitOne([TimeSpan]::FromMinutes(5))
+} catch [System.Threading.AbandonedMutexException] {
+  $syncAcquired = $true
+}
+if (-not $syncAcquired) { throw "another sync is still running after 5 minutes; try again later" }
+
 function Get-RelativePath([string]$Base, [string]$Target) {
   # [IO.Path]::GetRelativePath doesn't exist on Windows PowerShell 5.1 (.NET Framework).
   $base = $Base.TrimEnd('\', '/') + '\'
