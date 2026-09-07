@@ -397,8 +397,11 @@ def mux_audio_video(ffmpeg: str, video_path: Path, audio_path: Path | None,
 def encode_segment(ffmpeg: str, seg: Segment, graph_file: Path,
                    out_path: Path, fps: int, preset: str, crf: int, timeout: int) -> None:
     cmd = ["ffmpeg", "-y", "-v", "error"]
+    # NOTE: every input carries its own -t. Without it each demuxer races
+    # ahead decoding the file remainder, ballooning filter queues (~250MB+
+    # per input at 100+ inputs = swap death). Output -t stays as backstop.
     for c in seg.active:
-        cmd += ["-ss", f"{seg.start:.3f}", "-i", str(c.path)]
+        cmd += ["-ss", f"{seg.start:.3f}", "-t", f"{seg.length:.3f}", "-i", str(c.path)]
     cmd += ["-filter_complex_script", str(graph_file),
             "-map", "[vout]"]
     cmd += ["-t", f"{seg.length:.3f}",
@@ -417,7 +420,7 @@ def encode_morph(ffmpeg: str, span: MorphSpan, ordered_clips: list[Clip],
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
            f"color=black:size={width}x{grid_h + header_h}:rate={fps}:duration={d:.3f}"]
     for c in ordered_clips:
-        cmd += ["-ss", f"{span.start:.3f}", "-i", str(c.path)]
+        cmd += ["-ss", f"{span.start:.3f}", "-t", f"{d:.3f}", "-i", str(c.path)]
     cmd += ["-filter_complex_script", str(graph_file),
             "-map", "[vout]",
             "-t", f"{d:.3f}",
