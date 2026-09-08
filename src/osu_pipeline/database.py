@@ -220,6 +220,30 @@ def requeue_one(conn: sqlite3.Connection, replay_id: int, error: str) -> None:
     conn.commit()
 
 
+def find_staging_rows(conn: sqlite3.Connection, staging: str = "staging") -> list:
+    """Rows indexed while their file sat in the sync landing zone (any depth)."""
+    rows = conn.execute(
+        "SELECT id, path, sha256, status, attempts, render_path FROM replays "
+        "WHERE path LIKE ? ORDER BY id",
+        (f"%{staging}%",),
+    ).fetchall()
+    return [dict(r) for r in rows if staging in Path(r["path"]).parts[:-1]]
+
+
+def repoint_replay(conn: sqlite3.Connection, replay_id: int, new_path: str, error: str) -> None:
+    """Move a row to its post-sync path and release it back to pending."""
+    conn.execute(
+        "UPDATE replays SET path = ?, status = 'pending', attempts = 0, error = ? WHERE id = ?",
+        (new_path, error, replay_id),
+    )
+    conn.commit()
+
+
+def delete_replay(conn: sqlite3.Connection, replay_id: int) -> None:
+    conn.execute("DELETE FROM replays WHERE id = ?", (replay_id,))
+    conn.commit()
+
+
 def get_day_jobs(conn: sqlite3.Connection, day: str, status: str) -> list:
     """Rows for one day+status (progress overview, failure triage)."""
     rows = conn.execute(

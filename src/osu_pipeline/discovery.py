@@ -7,6 +7,9 @@ Rules:
   than `min_age_seconds` (marginal rsync-atomicity protection).
 - Hash with SHA-256 (streamed) only after the stability gate passes.
 - Identity = (relative POSIX path, sha256). Re-scans are idempotent no-ops.
+- The sync landing zone (`staging/` at any depth) is never indexed: a row
+  baked from a mid-sync staging path could never render after the file moved
+  into place.
 - played_at/day come from the .osr timestamp via osrparse, normalized to UTC.
   Corrupt/unparseable files are still recorded (pending + error) so they are
   never silently dropped; day/ played_at stay NULL.
@@ -26,6 +29,10 @@ from .models import STATUS_PENDING
 log = logging.getLogger(__name__)
 
 _CHUNK = 65536
+
+# Sync landing zone skipped at any depth (see module docstring). Must match
+# the watcher's staging dir name (scripts/sync-replays.ps1 StagingDirName).
+STAGING_DIR_NAME = "staging"
 
 
 def sha256_of(path: Path) -> str:
@@ -89,7 +96,8 @@ def scan_replays(
 ) -> dict:
     """One full scan pass. Returns stats dict. Safe to re-run; crash-safe."""
     replay_root = Path(replay_root)
-    stats = {"found": 0, "new": 0, "skipped_unstable": 0, "parse_fallbacks": 0, "duplicates": 0}
+    stats = {"found": 0, "new": 0, "skipped_unstable": 0, "parse_fallbacks": 0,
+             "duplicates": 0, "skipped_staging": 0}
 
     if not replay_root.exists():
         raise FileNotFoundError(f"Replay directory not found: {replay_root}")
@@ -101,6 +109,9 @@ def scan_replays(
         # Walk everything, filter suffix manually for case-insensitivity.
         for candidate in replay_root.rglob("*"):
             if not candidate.is_file():
+                continue
+            if STAGING_DIR_NAME in candidate.relative_to(replay_root).parts[:-1]:
+                stats["skipped_staging"] += 1
                 continue
             if candidate.suffix.lower() != ".osr":
                 continue  # ignores .part, .osr.part, etc.

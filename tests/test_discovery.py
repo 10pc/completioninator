@@ -65,3 +65,25 @@ def test_recent_file_skipped_until_stable(tmp_path: Path):
 
     stats2 = scan_replays(root, db, min_age_seconds=0)
     assert stats2["new"] == 1
+
+
+def test_staging_dir_skipped_at_any_depth(tmp_path: Path):
+    root = tmp_path / "replays"
+    _make_old_file(root / "ok.osr")
+    _make_old_file(root / "staging" / "a.osr")
+    _make_old_file(root / "osu" / "replays" / "staging" / "b.osr")
+    _make_old_file(root / "osu" / "replays" / "c.osr")
+    db = tmp_path / "p.sqlite"
+
+    stats = scan_replays(root, db, min_age_seconds=5)
+    assert stats["new"] == 2
+    assert stats["skipped_staging"] == 2
+    assert stats["found"] == 2
+
+    conn = database.connect(db)
+    try:
+        paths = [r["path"] for r in
+                 conn.execute("SELECT path FROM replays").fetchall()]
+        assert all("staging" not in p for p in paths)
+    finally:
+        conn.close()

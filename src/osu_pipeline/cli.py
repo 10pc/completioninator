@@ -86,6 +86,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--before", required=True, help="Exclude rendered/composited rows with day < YYYY-MM-DD")
     ex.add_argument("--dry-run", action="store_true", help="Report without changing")
     ex.add_argument("--db", default=None, help="Override database path")
+
+    rp = sub.add_parser("repair", help="Heal rows discovered inside the sync staging dir")
+    rp.add_argument("--dry-run", action="store_true", help="Report without changing")
+    rp.add_argument("--scan-root", default=None, help="Override replay directory")
+    rp.add_argument("--db", default=None, help="Override database path")
     return p
 
 
@@ -96,7 +101,7 @@ def _cmd_discover(args, cfg) -> int:
     print(
         f"found={stats['found']} new={stats['new']} "
         f"duplicates={stats['duplicates']} unstable={stats['skipped_unstable']} "
-        f"fallbacks={stats['parse_fallbacks']}"
+        f"staging={stats['skipped_staging']} fallbacks={stats['parse_fallbacks']}"
     )
     return 0
 
@@ -743,6 +748,65 @@ def _cmd_exclude(args, cfg) -> int:
     return 0
 
 
+def _cmd_repair(args, cfg) -> int:
+    """Heal rows indexed while their file sat in the sync staging dir.
+
+    For each staging row: if the same replay already exists at its post-sync
+    path the row is redundant and dropped; else if the file is on disk
+    (staged or final) the row is repointed at the final path and released to
+    pending; anything else is reported and left alone.
+    """
+    from . import discovery
+
+    db_path = Path(args.db) if args.db else cfg.database_path
+    root = Path(args.scan_root) if args.scan_root else cfg.replays_dir
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    try:
+        rows = database.find_staging_rows(conn, discovery.STAGING_DIR_NAME)
+        actions = {"dedupe": 0, "repoint": 0, "moved": 0, "orphan": 0}
+        shown = []
+        for row in rows:
+            parts = [p for p in Path(row["path"]).parts
+                     if p != discovery.STAGING_DIR_NAME]
+            final_rel = Path(*parts).as_posix() if parts else row["path"]
+            src, dst = root / row["path"], root / final_rel
+            if final_rel != row["path"] and database.replay_exists(
+                    conn, final_rel, row["sha256"]):
+                action = "dedupe"
+            elif dst.exists():
+                action = "repoint"
+            elif src.exists():
+                action = "moved"
+            else:
+                action = "orphan"
+            actions[action] += 1
+            if len(shown) < 10:
+                shown.append(f"  {action}: {row['path']}")
+            if args.dry_run:
+                continue
+            if action == "dedupe":
+                database.delete_replay(conn, row["id"])
+            elif action == "repoint":
+                database.repoint_replay(
+                    conn, row["id"], final_rel, "repair: repointed from staging path")
+            elif action == "moved":
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                database.repoint_replay(
+                    conn, row["id"], final_rel, "repair: relocated from staging dir")
+    finally:
+        conn.close()
+    verb = "would repair" if args.dry_run else "repaired"
+    print(f"{verb} staging rows: " +
+          ", ".join(f"{k}={v}" for k, v in actions.items()))
+    print("\n".join(shown))
+    if actions["orphan"]:
+        print("orphans need a fresh sync delivery (source still has the file) "
+              "or manual cleanup")
+    return 0
+
+
 def _cmd_auth_youtube(args, cfg) -> int:
     from . import uploader
 
@@ -949,6 +1013,8 @@ def main(argv: list | None = None) -> int:
         return _cmd_prune(args, cfg)
     if args.command == "exclude":
         return _cmd_exclude(args, cfg)
+    if args.command == "repair":
+        return _cmd_repair(args, cfg)
     parser.print_help()
     return 2
 
