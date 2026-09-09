@@ -35,6 +35,11 @@ mirror = "https://mirror.hinamizawa.ai"
 # Empty string disables the fallback.
 fallback_backend = "mino"
 fallback_mirror = "https://catboy.best"
+# Third tier, downloads only (nekoha exposes no checksum lookup): tried for
+# bytes after both lookup-capable mirrors fail. Nekoha caps downloads at
+# 30/day/IP, so it stays last. Empty string disables.
+fallback2_backend = "nekoha"
+fallback2_mirror = "https://mirror.nekoha.moe"
 songs_dir = "/data/beatmaps/songs"
 # Durable .osz downloads. danser deletes the Songs copy after unpacking, so
 # without this every render would re-download from the mirror.

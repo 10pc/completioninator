@@ -385,6 +385,7 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
                 osu_client_id=cfg.osu_client_id, osu_client_secret=cfg.osu_client_secret,
                 backend=cfg.beatmap_backend,
                 fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
+                fallback2_mirror=cfg.fallback2_mirror, fallback2_backend=cfg.fallback2_backend,
                 cache_dir=cfg.beatmaps_cache,
             )
             database.set_beatmap(conn, jid, bhash, set_id)

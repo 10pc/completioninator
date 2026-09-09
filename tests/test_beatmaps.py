@@ -92,6 +92,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif self.path.startswith("/api/download/503"):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(FAKE_OSZ)))
+            self.end_headers()
+            self.wfile.write(FAKE_OSZ)
+        elif self.path.startswith("/api/download/401"):
+            self.send_response(401)
+            self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()
@@ -155,7 +163,7 @@ def test_ensure_beatmap_falls_back_to_official(mirror, tmp_path: Path):
         beatmaps.ensure_beatmap(
             mirror, KNOWN_OFFICIAL_MD5, tmp_path,
             osu_client_id="cid", osu_client_secret="secret", osu_base=mirror,
-            fallback_mirror=mirror, fallback_backend="mino")
+            fallback_mirror=mirror, fallback_backend="mino", fallback2_mirror=None)
 
 
 def test_requeue_failed(tmp_path: Path):
@@ -230,9 +238,34 @@ def test_503_download_is_transient(mirror, tmp_path: Path):
     # stub has no md5 route for this hash; resolve via override to reach download
     with pytest.raises(beatmaps.BeatmapError) as ei:
         beatmaps.ensure_beatmap(mirror, None, tmp_path, override_set_id=503, backend="hinamizawa",
-                                fallback_mirror=mirror, fallback_backend="mino")
+                                fallback_mirror=mirror, fallback_backend="mino",
+                                fallback2_mirror=None)
     assert ei.value.transient is True
     assert "503" in str(ei.value)
+
+
+def test_nekoha_download_url_shape():
+    assert beatmaps._download_url("https://mirror.nekoha.moe/", 77, "nekoha") == \
+        "https://mirror.nekoha.moe/api/download/77?noVideo=true"
+
+
+def test_ensure_falls_back_to_nekoha_download(mirror, tmp_path: Path):
+    # hinamizawa 503s, mino 404s, nekoha serves: third tier saves the job.
+    songs = tmp_path / "songs"
+    cache = tmp_path / "cache"
+    set_id, staged = beatmaps.ensure_beatmap(
+        mirror, None, songs, timeout=10, override_set_id=503,
+        backend="hinamizawa", fallback_mirror=mirror, fallback_backend="mino",
+        fallback2_mirror=mirror, fallback2_backend="nekoha", cache_dir=cache)
+    assert set_id == 503
+    assert staged.exists() and staged.stat().st_size > 0
+    assert (cache / "503.osz").exists()
+
+
+def test_nekoha_download_401_is_terminal(mirror, tmp_path: Path):
+    with pytest.raises(beatmaps.BeatmapError) as ei:
+        beatmaps.download_beatmapset(mirror, 401, tmp_path, backend="nekoha")
+    assert ei.value.transient is False
 
 
 def test_replay_hash_in_songs(tmp_path: Path):

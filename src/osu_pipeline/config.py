@@ -48,6 +48,8 @@ class PipelineConfig:
     beatmap_backend: str = "hinamizawa"  # or "mino"
     fallback_mirror: str | None = "https://catboy.best"
     fallback_backend: str = "mino"
+    fallback2_mirror: str | None = "https://mirror.nekoha.moe"
+    fallback2_backend: str = "nekoha"
     beatmaps_cache: Path = Path("/data/beatmaps/cache")
     songs_dir: Path = Path("/data/beatmaps/songs")
     # official osu! API fallback for hash resolution (optional; free OAuth app)
@@ -132,6 +134,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     beatmap_backend = os.environ.get("PIPELINE_BEATMAP_BACKEND")
     fallback_mirror = os.environ.get("PIPELINE_FALLBACK_MIRROR")
     fallback_backend = os.environ.get("PIPELINE_FALLBACK_BACKEND")
+    fallback2_mirror = os.environ.get("PIPELINE_FALLBACK2_MIRROR")
+    fallback2_backend = os.environ.get("PIPELINE_FALLBACK2_BACKEND")
     songs = os.environ.get("PIPELINE_SONGS_DIR")
     beatmaps_cache = os.environ.get("PIPELINE_BEATMAPS_CACHE")
     osu_client_id = os.environ.get("PIPELINE_OSU_CLIENT_ID")
@@ -188,6 +192,11 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         elif fallback_mirror == "":
             fallback_mirror = None  # explicitly disabled
         fallback_backend = fallback_backend or beatmaps.get("fallback_backend", "mino")
+        if fallback2_mirror is None:
+            fallback2_mirror = beatmaps.get("fallback2_mirror", "https://mirror.nekoha.moe")
+        elif fallback2_mirror == "":
+            fallback2_mirror = None  # explicitly disabled
+        fallback2_backend = fallback2_backend or beatmaps.get("fallback2_backend", "nekoha")
         songs = songs or beatmaps.get("songs_dir", "/data/beatmaps/songs")
         beatmaps_cache = beatmaps_cache or beatmaps.get("cache_dir", "/data/beatmaps/cache")
         osu = data.get("osu", {})
@@ -254,6 +263,10 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
             fallback_mirror = "https://catboy.best"
         elif fallback_mirror == "":
             fallback_mirror = None
+        if fallback2_mirror is None:
+            fallback2_mirror = "https://mirror.nekoha.moe"
+        elif fallback2_mirror == "":
+            fallback2_mirror = None
         render_max_attempts = int(render_max_attempts or 3)
         limit_default = int(os.environ.get("PIPELINE_RENDER_LIMIT", "10"))
         video_width, video_height, video_fps = 1920, 1080, 30
@@ -304,6 +317,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         beatmap_backend=beatmap_backend or "hinamizawa",
         fallback_mirror=fallback_mirror,
         fallback_backend=fallback_backend or "mino",
+        fallback2_mirror=fallback2_mirror,
+        fallback2_backend=fallback2_backend or "nekoha",
         songs_dir=Path(songs or "/data/beatmaps/songs"),
         beatmaps_cache=Path(beatmaps_cache or "/data/beatmaps/cache"),
         osu_client_id=osu_client_id,

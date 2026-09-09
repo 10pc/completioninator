@@ -267,6 +267,9 @@ def _download_url(mirror: str, beatmapset_id: int, backend: str) -> str:
     base = mirror.rstrip("/")
     if backend == "hinamizawa":
         return f"{base}/api/v1/hinai/d/{beatmapset_id}"  # proxied .osz bytes
+    if backend == "nekoha":
+        # No video: danser only needs audio + hitobjects; also cheaper/faster.
+        return f"{base}/api/download/{beatmapset_id}?noVideo=true"
     return f"{base}/d/{beatmapset_id}"
 
 
@@ -408,6 +411,8 @@ def ensure_beatmap(
     backend: str = "hinamizawa",
     fallback_mirror: str | None = "https://catboy.best",
     fallback_backend: str = "mino",
+    fallback2_mirror: str | None = "https://mirror.nekoha.moe",
+    fallback2_backend: str = "nekoha",
     cache_dir: Path | str | None = None,
 ) -> tuple[int, Path]:
     """Ensure the .osz for a replay is visible in the Songs dir.
@@ -415,13 +420,18 @@ def ensure_beatmap(
     Downloads land in the cache dir (durable); a copy is staged into Songs
     because danser deletes .osz files after unpacking. cache_dir defaults to
     songs_dir (old behavior: re-download after every danser run).
+    fallback2 is a download-only tier (nekoha exposes no checksum lookup),
+    tried after the lookup-capable mirrors for bytes only.
     Returns (set_id, Songs .osz path).
     """
     songs_path = Path(songs_dir)
     cache_path = Path(cache_dir) if cache_dir else songs_path
     chain = _mirror_chain(mirror, backend, fallback_mirror, fallback_backend)
+    dl_chain = list(chain)
+    if fallback2_mirror and (fallback2_backend, fallback2_mirror) not in dl_chain:
+        dl_chain.append((fallback2_backend, fallback2_mirror))
     if override_set_id is not None:
-        dl = _download_any(chain, override_set_id, cache_path, timeout)
+        dl = _download_any(dl_chain, override_set_id, cache_path, timeout)
         return override_set_id, stage_into_songs(dl, songs_path, override_set_id)
     if not beatmap_hash:
         raise BeatmapError("no_beatmap: replay has no beatmap hash (unparseable .osr?)")
@@ -449,7 +459,7 @@ def ensure_beatmap(
                 transient=True, service_down=True)
         raise BeatmapError(f"no_beatmap: hash {beatmap_hash} not found on mirror")
     try:
-        dl = _download_any(chain, set_id, cache_path, timeout)
+        dl = _download_any(dl_chain, set_id, cache_path, timeout)
     except BeatmapError as exc:
         if exc.transient:
             raise BeatmapError(str(exc), transient=True, service_down=True) from exc
