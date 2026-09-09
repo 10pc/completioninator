@@ -193,6 +193,40 @@ def test_missing_source_requeues_not_fails(tmp_path: Path, monkeypatch, capsys):
         conn.close()
 
 
+def test_service_outage_stops_run_early(tmp_path: Path, monkeypatch, capsys):
+    """All-mirrors-down must pause the queue, not burn every job's attempts."""
+    import osu_pipeline.cli as cli_mod
+
+    root = tmp_path / "replays"
+    root.mkdir()
+    (root / "a.osr").write_bytes(b"fake-replay")
+    (root / "b.osr").write_bytes(b"fake-replay")
+    db = tmp_path / "p.sqlite"
+    _seed_row(db, path="a.osr", sha256="1")
+    _seed_row(db, path="b.osr", sha256="2")
+    cfg = _write_cfg(tmp_path)
+    stub = _stub_renderer(tmp_path)
+    monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: stub)
+
+    def _down(*a, **k):
+        raise beatmaps.BeatmapError(
+            "beatmap services unavailable (transient) for hash x", transient=True,
+            service_down=True)
+
+    monkeypatch.setattr(beatmaps, "ensure_beatmap", _down)
+    assert main(["--config", str(cfg), "render", "--limit", "2", "--workers", "1"]) == 0
+    assert "stopping run early" in capsys.readouterr().out
+    conn = database.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT status, attempts FROM replays ORDER BY path").fetchall()
+        assert [r["status"] for r in rows] == ["pending", "pending"]
+        # only the first job was claimed; the second was never touched
+        assert sum(r["attempts"] for r in rows) == 1
+    finally:
+        conn.close()
+
+
 def test_danser_beatmap_not_found_diagnosis(tmp_path: Path, monkeypatch):
     from osu_pipeline.cli import _diagnose_render_failure
     from osu_pipeline.renderer import RenderResult

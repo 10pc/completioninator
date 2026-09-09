@@ -41,9 +41,13 @@ class BeatmapError(Exception):
     cap still bounds it, so a persistently-broken job eventually gives up.
     """
 
-    def __init__(self, message: str, transient: bool = False) -> None:
+    def __init__(self, message: str, transient: bool = False,
+                 service_down: bool = False) -> None:
         super().__init__(message)
         self.transient = transient
+        # service_down=True means EVERY backend blipped (not one bad map):
+        # the render loop should stop claiming, not burn the queue's attempts.
+        self.service_down = service_down
 
 
 _TRANSIENT_HTTP = {408, 429, 500, 502, 503, 504}
@@ -442,7 +446,12 @@ def ensure_beatmap(
         if transient_seen:
             raise BeatmapError(
                 f"beatmap services unavailable (transient) for hash {beatmap_hash}",
-                transient=True)
+                transient=True, service_down=True)
         raise BeatmapError(f"no_beatmap: hash {beatmap_hash} not found on mirror")
-    dl = _download_any(chain, set_id, cache_path, timeout)
+    try:
+        dl = _download_any(chain, set_id, cache_path, timeout)
+    except BeatmapError as exc:
+        if exc.transient:
+            raise BeatmapError(str(exc), transient=True, service_down=True) from exc
+        raise
     return set_id, stage_into_songs(dl, songs_path, set_id)

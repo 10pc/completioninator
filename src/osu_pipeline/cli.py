@@ -205,7 +205,7 @@ def _worker_loop(wid: int, cfg, renderer, beatmapset_id, state,
                 break
             try:
                 _render_one(conn, cfg, renderer, job, override_set_id=beatmapset_id,
-                            stats=local, ensure_lock=ensure_lock)
+                            stats=local, ensure_lock=ensure_lock, stop_event=stop_event)
             except Exception as exc:  # noqa: BLE001 - one bad job must never kill the batch
                 log.exception("unexpected error on job-%s", job["id"])
                 try:
@@ -340,7 +340,8 @@ def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result)
 
 
 def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
-                stats: dict, ensure_lock: threading.Lock | None = None) -> None:
+                stats: dict, ensure_lock: threading.Lock | None = None,
+                stop_event: threading.Event | None = None) -> None:
     jid = job["id"]
     tag = f"job-{jid}"
     if job["attempts"] > cfg.render_max_attempts:
@@ -393,6 +394,12 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
                 database.requeue_one(conn, jid, f"transient: {exc}")
                 stats["retried"] += 1
                 print(f"[{tag}] transient beatmap failure, requeued: {exc}")
+                if exc.service_down and stop_event is not None:
+                    # Every backend is down: stop claiming so the outage
+                    # pauses the queue instead of burning all attempts.
+                    print(f"[{tag}] beatmap services down; stopping run early "
+                          f"(unclaimed jobs untouched)")
+                    stop_event.set()
                 return
             database.mark_failed(conn, jid, str(exc))
             stats["failed"] += 1

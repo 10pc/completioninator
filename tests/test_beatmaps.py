@@ -169,8 +169,12 @@ def test_requeue_failed(tmp_path: Path):
             played_at="2026-09-06T00:00:00+00:00", day="2026-09-06", status="failed",
         )
         conn.commit()
+        conn.execute("UPDATE replays SET attempts = 4 WHERE path = 'a.osr'")
+        conn.commit()
         assert database.requeue_failed(conn) == 1
         assert database.get_counts(conn)["pending"] == 1
+        row = conn.execute("SELECT attempts, error FROM replays").fetchone()
+        assert row["attempts"] == 0 and row["error"] is None
         assert database.requeue_failed(conn) == 0
     finally:
         conn.close()

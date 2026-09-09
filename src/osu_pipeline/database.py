@@ -206,8 +206,8 @@ def reset_stale_rendering(conn: sqlite3.Connection, older_than_minutes: float = 
 
 
 def requeue_failed(conn: sqlite3.Connection) -> int:
-    """Return `failed` jobs to `pending` so they can be retried after a fix."""
-    cur = conn.execute("UPDATE replays SET status = 'pending', error = NULL WHERE status = 'failed'")
+    """Return `failed` jobs to `pending` with fresh attempts, for retry after a fix."""
+    cur = conn.execute("UPDATE replays SET status = 'pending', attempts = 0, error = NULL WHERE status = 'failed'")
     conn.commit()
     return cur.rowcount
 
