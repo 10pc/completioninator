@@ -86,6 +86,7 @@ class PipelineConfig:
     youtube_thumbnail: bool = True
     youtube_thumbnail_second: float = 2.0
     youtube_publish_at: str = "06:00"
+    youtube_publish_at_tz: str = "Antarctica/Casey"
     prune_after_upload: bool = True
     # instagram (Milestone 7; token via env ONLY)
     instagram_user_id: str | None = None
@@ -155,6 +156,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     youtube_thumbnail_raw = os.environ.get("PIPELINE_YOUTUBE_THUMBNAIL")
     youtube_thumbnail_second_raw = os.environ.get("PIPELINE_YOUTUBE_THUMBNAIL_SECOND")
     youtube_publish_at = os.environ.get("PIPELINE_YOUTUBE_PUBLISH_AT")
+    youtube_publish_at_tz = os.environ.get("PIPELINE_YOUTUBE_PUBLISH_AT_TZ")
     instagram_user_id = os.environ.get("PIPELINE_INSTAGRAM_USER_ID")
     instagram_token = os.environ.get("PIPELINE_INSTAGRAM_TOKEN")
     render_timeout = os.environ.get("PIPELINE_RENDER_TIMEOUT")
@@ -266,6 +268,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
             youtube_publish_at = youtube.get("publish_at", "06:00")
         elif youtube_publish_at == "":
             youtube_publish_at = ""  # explicitly disabled: upload immediately
+        if youtube_publish_at_tz is None:
+            youtube_publish_at_tz = youtube.get("publish_at_tz", "Antarctica/Casey")
         instagram = data.get("instagram", {})
         instagram_user_id = instagram_user_id or instagram.get("user_id")
         instagram_api_version = instagram.get("api_version", "v25.0")
@@ -313,6 +317,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_thumbnail_second = float(os.environ.get(
             "PIPELINE_YOUTUBE_THUMBNAIL_SECOND", "2.0"))
         youtube_publish_at = os.environ.get("PIPELINE_YOUTUBE_PUBLISH_AT", "06:00")
+        youtube_publish_at_tz = os.environ.get(
+            "PIPELINE_YOUTUBE_PUBLISH_AT_TZ", "Antarctica/Casey")
         instagram_api_version, instagram_caption_template = (
             "v25.0", "OSU! Completionist — {day} ({clips} maps)")
         fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -377,6 +383,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_thumbnail=youtube_thumbnail,
         youtube_thumbnail_second=youtube_thumbnail_second,
         youtube_publish_at=youtube_publish_at,
+        youtube_publish_at_tz=youtube_publish_at_tz,
         prune_after_upload=prune_after_upload,
         instagram_user_id=instagram_user_id,
         instagram_token=instagram_token,

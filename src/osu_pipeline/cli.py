@@ -883,7 +883,8 @@ def _upload_youtube(conn, cfg, args, row: dict, video: Path) -> int:
     publish_at = None
     if cfg.youtube_publish_at:
         try:
-            publish_at = uploader.scheduled_publish_at(args.day, cfg.youtube_publish_at)
+            publish_at = uploader.scheduled_publish_at(
+                args.day, cfg.youtube_publish_at, cfg.youtube_publish_at_tz)
         except uploader.UploadError as exc:
             print(f"bad publish_at config ({exc}); uploading immediately", file=sys.stderr)
     try:

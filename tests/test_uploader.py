@@ -412,17 +412,22 @@ def test_upload_immediate_keeps_privacy(tmp_path: Path, monkeypatch):
 
 def test_scheduled_publish_at_helper():
     from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
 
-    future = uploader.scheduled_publish_at("2099-01-02", "06:00")
-    assert future.startswith("2099-01-02T06:00:00")  # server-local wall time
+    TZ = "Asia/Singapore"  # fixed +08, no DST: deterministic anywhere
+    future = uploader.scheduled_publish_at("2099-01-02", "06:00", TZ)
+    assert future == "2099-01-02T06:00:00+08:00"
     # passed slot rolls to the next occurrence (the nightly case)
-    now = datetime.now().astimezone()
+    now = datetime.now(ZoneInfo(TZ))
     past_hhmm = (now - timedelta(hours=3)).strftime("%H:%M")
-    rolled = uploader.scheduled_publish_at(now.strftime("%Y-%m-%d"), past_hhmm)
+    rolled = uploader.scheduled_publish_at(now.strftime("%Y-%m-%d"), past_hhmm, TZ)
     assert rolled.startswith((now + timedelta(days=1)).strftime("%Y-%m-%dT"))
     assert rolled[11:16] == past_hhmm
+    assert rolled.endswith("+08:00")
     with pytest.raises(uploader.UploadError, match="HH:MM"):
-        uploader.scheduled_publish_at("2099-01-02", "dawn")
+        uploader.scheduled_publish_at("2099-01-02", "dawn", TZ)
+    with pytest.raises(uploader.UploadError, match="publish_at_tz"):
+        uploader.scheduled_publish_at("2099-01-02", "06:00", "Nope/Nowhere")
 
 
 def test_extract_code_from_url_and_bare():

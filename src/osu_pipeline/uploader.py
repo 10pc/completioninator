@@ -262,24 +262,30 @@ def set_thumbnail(service, video_id: str, image_path: Path) -> None:
         raise UploadError(f"thumbnail upload failed: {exc}") from exc
 
 
-def scheduled_publish_at(day: str, hhmm: str) -> str | None:
-    """RFC3339 publishAt for HH:MM server-local, starting on `day`.
+def scheduled_publish_at(day: str, hhmm: str, tz_name: str) -> str:
+    """RFC3339 publishAt for HH:MM wall time in `tz_name`, starting on `day`.
 
     The nightly compose runs at 03:00 local for the *previous* UTC day, so
     that day's 06:00 slot has always passed: roll forward to the next
     future occurrence (normally tomorrow 06:00, hours away). Backlog days
     schedule at the next occurrence too, so everything converges on 06:00.
+    The zone is explicit because containers often run on UTC while the
+    audience/server keeps wall time elsewhere.
     """
     from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+    try:
+        zone = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError as exc:
+        raise UploadError(f"bad publish_at_tz {tz_name!r}: {exc}") from exc
     try:
         hour, minute = hhmm.split(":")
         when = datetime.strptime(day, "%Y-%m-%d").replace(
-            hour=int(hour), minute=int(minute), second=0)
+            hour=int(hour), minute=int(minute), second=0, tzinfo=zone)
     except ValueError as exc:
         raise UploadError(f"bad publish_at {hhmm!r} (want HH:MM): {exc}") from exc
-    when = when.astimezone()  # naive -> server-local wall time
-    now = datetime.now().astimezone()
+    now = datetime.now(zone)
     while when <= now + timedelta(minutes=2):
         when += timedelta(days=1)
     return when.isoformat()

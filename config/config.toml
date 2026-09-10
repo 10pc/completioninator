@@ -104,6 +104,9 @@ thumbnail_second = 2.0
 # morning after compose). Empty string disables (upload immediately with
 # `privacy` above).
 publish_at = "06:00"
+# Wall-time zone for the slot above (IANA name; check the server's with
+# `timedatectl`). Containers run on UTC, so this must be explicit.
+publish_at_tz = "Antarctica/Casey"
 title_template = "osu!completionist journey — {day} ({clips} passes)"
 # Placeholders: {day} {clips} {span} {passed} {left} {pct} {remaining}
 # ({left} is the total pool, {remaining} = pool minus passed).
