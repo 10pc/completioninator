@@ -411,9 +411,16 @@ def test_upload_immediate_keeps_privacy(tmp_path: Path, monkeypatch):
 
 
 def test_scheduled_publish_at_helper():
+    from datetime import datetime, timedelta
+
     future = uploader.scheduled_publish_at("2099-01-02", "06:00")
     assert future.startswith("2099-01-02T06:00:00")  # server-local wall time
-    assert uploader.scheduled_publish_at("2000-01-01", "06:00") is None  # past -> immediate
+    # passed slot rolls to the next occurrence (the nightly case)
+    now = datetime.now().astimezone()
+    past_hhmm = (now - timedelta(hours=3)).strftime("%H:%M")
+    rolled = uploader.scheduled_publish_at(now.strftime("%Y-%m-%d"), past_hhmm)
+    assert rolled.startswith((now + timedelta(days=1)).strftime("%Y-%m-%dT"))
+    assert rolled[11:16] == past_hhmm
     with pytest.raises(uploader.UploadError, match="HH:MM"):
         uploader.scheduled_publish_at("2099-01-02", "dawn")
 

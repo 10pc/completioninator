@@ -263,11 +263,12 @@ def set_thumbnail(service, video_id: str, image_path: Path) -> None:
 
 
 def scheduled_publish_at(day: str, hhmm: str) -> str | None:
-    """RFC3339 publishAt for HH:MM server-local on `day`.
+    """RFC3339 publishAt for HH:MM server-local, starting on `day`.
 
-    Returns None when that moment is not safely in the future (backlog
-    uploads, clock skew): the caller then uploads immediately instead of
-    asking YouTube to schedule in the past.
+    The nightly compose runs at 03:00 local for the *previous* UTC day, so
+    that day's 06:00 slot has always passed: roll forward to the next
+    future occurrence (normally tomorrow 06:00, hours away). Backlog days
+    schedule at the next occurrence too, so everything converges on 06:00.
     """
     from datetime import datetime, timedelta
 
@@ -278,6 +279,7 @@ def scheduled_publish_at(day: str, hhmm: str) -> str | None:
     except ValueError as exc:
         raise UploadError(f"bad publish_at {hhmm!r} (want HH:MM): {exc}") from exc
     when = when.astimezone()  # naive -> server-local wall time
-    if when <= datetime.now().astimezone() + timedelta(minutes=2):
-        return None
+    now = datetime.now().astimezone()
+    while when <= now + timedelta(minutes=2):
+        when += timedelta(days=1)
     return when.isoformat()
