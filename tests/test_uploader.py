@@ -163,7 +163,7 @@ def test_cli_upload_happy_path_and_duplicate_skip(tmp_path: Path, monkeypatch, c
     monkeypatch.setattr(uploader, "build_service", lambda c: _FakeService([(None, {"id": "v1"})]))
     monkeypatch.setattr(
         uploader, "upload_video",
-        lambda svc, path, title, desc, cat, priv: (calls.__setitem__("n", calls["n"] + 1), "v1")[1])
+        lambda svc, path, title, desc, cat, priv, **k: (calls.__setitem__("n", calls["n"] + 1), "v1")[1])
 
     assert main(["--config", str(cfg), "upload", "2026-09-06"]) == 0
     assert "youtu.be/v1" in capsys.readouterr().out
@@ -388,6 +388,34 @@ def test_auth_flow_binds_configured_host(tmp_path: Path, monkeypatch):
     assert seen["host"] == "localhost" and seen["port"] == 8091
     assert seen["bind_addr"] == "0.0.0.0"
     assert (tmp_path / "tok.json").exists()
+
+
+def test_upload_scheduled_sets_private_and_publish_at(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(uploader.time, "sleep", lambda s: None)
+    svc = _FakeService([(None, {"id": "v3"})])
+    vid = uploader.upload_video(svc, _video(tmp_path), "T", "D", "20", "unlisted",
+                                publish_at="2030-01-01T06:00:00+08:00")
+    assert vid == "v3"
+    status = svc.insert_kwargs["body"]["status"]
+    assert status["privacyStatus"] == "private"  # scheduling forces private
+    assert status["publishAt"] == "2030-01-01T06:00:00+08:00"
+
+
+def test_upload_immediate_keeps_privacy(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(uploader.time, "sleep", lambda s: None)
+    svc = _FakeService([(None, {"id": "v4"})])
+    uploader.upload_video(svc, _video(tmp_path), "T", "D", "20", "unlisted")
+    status = svc.insert_kwargs["body"]["status"]
+    assert status["privacyStatus"] == "unlisted"
+    assert "publishAt" not in status
+
+
+def test_scheduled_publish_at_helper():
+    future = uploader.scheduled_publish_at("2099-01-02", "06:00")
+    assert future.startswith("2099-01-02T06:00:00")  # server-local wall time
+    assert uploader.scheduled_publish_at("2000-01-01", "06:00") is None  # past -> immediate
+    with pytest.raises(uploader.UploadError, match="HH:MM"):
+        uploader.scheduled_publish_at("2099-01-02", "dawn")
 
 
 def test_extract_code_from_url_and_bare():

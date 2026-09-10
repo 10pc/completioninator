@@ -162,19 +162,31 @@ def render_description(template: str, day: str, clips: int, span: str | None,
 
 
 def upload_video(service, file_path: Path, title: str, description: str,
-                 category_id: str, privacy: str, chunks_mb: int = 8) -> str:
-    """Resumable upload with backoff. Returns the YouTube video ID."""
+                 category_id: str, privacy: str, chunks_mb: int = 8,
+                 publish_at: str | None = None) -> str:
+    """Resumable upload with backoff. Returns the YouTube video ID.
+
+    publish_at is an RFC3339 timestamp: YouTube holds the video private
+    until then and flips it public itself. Scheduling requires private,
+    so a non-private `privacy` is overridden (logged) when scheduling.
+    """
     from googleapiclient.errors import HttpError
     from googleapiclient.http import MediaFileUpload
 
     media = MediaFileUpload(str(file_path), mimetype="video/*", resumable=True,
                             chunksize=chunks_mb * 1024 * 1024)
+    effective_privacy = "private" if publish_at else privacy
+    if publish_at and privacy != "private":
+        log.info("scheduling requires private; overriding privacy %r", privacy)
+    status = {"privacyStatus": effective_privacy,
+              "selfDeclaredMadeForKids": False}
+    if publish_at:
+        status["publishAt"] = publish_at
     request = service.videos().insert(
         part="snippet,status",
         body={"snippet": {"title": title, "description": description,
                           "categoryId": category_id},
-              "status": {"privacyStatus": privacy,
-                         "selfDeclaredMadeForKids": False}},
+              "status": status},
         media_body=media,
     )
     response, error, retry = None, None, 0
@@ -248,3 +260,24 @@ def set_thumbnail(service, video_id: str, image_path: Path) -> None:
                 "youtube rejected the custom thumbnail (403): "
                 "channel may not be verified for custom thumbnails") from exc
         raise UploadError(f"thumbnail upload failed: {exc}") from exc
+
+
+def scheduled_publish_at(day: str, hhmm: str) -> str | None:
+    """RFC3339 publishAt for HH:MM server-local on `day`.
+
+    Returns None when that moment is not safely in the future (backlog
+    uploads, clock skew): the caller then uploads immediately instead of
+    asking YouTube to schedule in the past.
+    """
+    from datetime import datetime, timedelta
+
+    try:
+        hour, minute = hhmm.split(":")
+        when = datetime.strptime(day, "%Y-%m-%d").replace(
+            hour=int(hour), minute=int(minute), second=0)
+    except ValueError as exc:
+        raise UploadError(f"bad publish_at {hhmm!r} (want HH:MM): {exc}") from exc
+    when = when.astimezone()  # naive -> server-local wall time
+    if when <= datetime.now().astimezone() + timedelta(minutes=2):
+        return None
+    return when.isoformat()

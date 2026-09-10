@@ -99,6 +99,11 @@ category_id = "20"
 # verified for custom thumbnails or the API rejects it (video still uploads).
 thumbnail = true
 thumbnail_second = 2.0
+# Scheduled publishing: video goes up private right after compose, YouTube
+# flips it public at HH:MM server-local on the video's day. Empty string
+# disables (upload immediately with `privacy` above). Backlog uploads whose
+# slot already passed also fall back to immediate.
+publish_at = "06:00"
 title_template = "osu!completionist journey — {day} ({clips} passes)"
 # Placeholders: {day} {clips} {span} {passed} {left} {pct} {remaining}
 # ({left} is the total pool, {remaining} = pool minus passed).

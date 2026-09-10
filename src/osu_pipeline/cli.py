@@ -880,17 +880,26 @@ def _upload_youtube(conn, cfg, args, row: dict, video: Path) -> int:
         passed=row["passed"], left=row["left"], pct=row["pct"])
     database.mark_uploading(conn, args.day, "youtube")
     service = uploader.build_service(creds)
+    publish_at = None
+    if cfg.youtube_publish_at:
+        try:
+            publish_at = uploader.scheduled_publish_at(args.day, cfg.youtube_publish_at)
+        except uploader.UploadError as exc:
+            print(f"bad publish_at config ({exc}); uploading immediately", file=sys.stderr)
     try:
         video_id = uploader.upload_video(
             service, video, title, description,
-            cfg.youtube_category_id, cfg.youtube_privacy)
+            cfg.youtube_category_id, cfg.youtube_privacy, publish_at=publish_at)
     except uploader.UploadError as exc:
         database.mark_upload_failed(conn, args.day, "youtube", str(exc)[-500:])
         print(f"upload FAILED: {exc}", file=sys.stderr)
         return 1
     url = uploader.video_url(video_id)
     database.mark_uploaded(conn, args.day, "youtube", video_id, url)
-    print(f"uploaded {args.day} -> {url}")
+    if publish_at:
+        print(f"uploaded {args.day} -> {url} (scheduled public at {publish_at})")
+    else:
+        print(f"uploaded {args.day} -> {url}")
     if cfg.youtube_thumbnail:
         import tempfile
 
