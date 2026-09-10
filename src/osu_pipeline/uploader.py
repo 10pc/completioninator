@@ -204,3 +204,47 @@ def upload_video(service, file_path: Path, title: str, description: str,
 
 def video_url(video_id: str) -> str:
     return f"https://youtu.be/{video_id}"
+
+
+THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024  # YouTube custom-thumbnail limit
+
+
+def extract_thumbnail(video_path: Path, out_path: Path, second: float = 2.0) -> Path:
+    """Grab a JPEG frame at `second` for use as the YouTube thumbnail.
+
+    Raises UploadError when ffmpeg is missing/fails or the frame cannot be
+    squeezed under YouTube's 2MB thumbnail limit.
+    """
+    import subprocess
+
+    out_path = Path(out_path)
+    base = ["ffmpeg", "-y", "-v", "error", "-ss", f"{second:.1f}",
+            "-i", str(video_path), "-frames:v", "1"]
+    try:
+        subprocess.run(base + ["-q:v", "3", str(out_path)], check=True)
+        if out_path.stat().st_size <= THUMBNAIL_MAX_BYTES:
+            return out_path
+        # busy 1080p frame over budget: shrink to 1280 wide, harder squeeze
+        subprocess.run(base + ["-vf", "scale=1280:-1", "-q:v", "6", str(out_path)],
+                       check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise UploadError(f"thumbnail frame extraction failed: {exc}") from exc
+    if out_path.stat().st_size > THUMBNAIL_MAX_BYTES:
+        raise UploadError("thumbnail frame still over YouTube's 2MB limit after shrink")
+    return out_path
+
+
+def set_thumbnail(service, video_id: str, image_path: Path) -> None:
+    """Upload a custom thumbnail. Raises UploadError (caller decides fatality)."""
+    from googleapiclient.errors import HttpError
+    from googleapiclient.http import MediaFileUpload
+
+    media = MediaFileUpload(str(image_path), mimetype="image/jpeg", resumable=False)
+    try:
+        service.thumbnails().set(videoId=video_id, media_body=media).execute()
+    except HttpError as exc:
+        if exc.resp.status == 403:
+            raise UploadError(
+                "youtube rejected the custom thumbnail (403): "
+                "channel may not be verified for custom thumbnails") from exc
+        raise UploadError(f"thumbnail upload failed: {exc}") from exc

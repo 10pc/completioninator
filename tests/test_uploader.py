@@ -224,6 +224,145 @@ def test_cli_upload_missing_pieces(tmp_path: Path, monkeypatch, capsys):
     assert "client ID" in capsys.readouterr().err
 
 
+def test_extract_thumbnail_runs_ffmpeg_once(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    seen = {}
+
+    def _fake_run(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        Path(cmd[-1]).write_bytes(b"\xff" * 64)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    video = tmp_path / "day.mp4"
+    video.write_bytes(b"\x00" * 16)
+    out = tmp_path / "thumb.jpg"
+    assert uploader.extract_thumbnail(video, out, 2.0) == out
+    cmd = seen["cmd"]
+    assert cmd[:6] == ["ffmpeg", "-y", "-v", "error", "-ss", "2.0"]
+    assert "1" in cmd[cmd.index("-frames:v") + 1:cmd.index("-frames:v") + 2]
+
+
+def test_extract_thumbnail_shrinks_then_gives_up(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    calls = {"n": 0}
+
+    def _fake_run(cmd, **kwargs):
+        calls["n"] += 1
+        Path(cmd[-1]).write_bytes(b"\xff" * (3 * 1024 * 1024))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    video = tmp_path / "day.mp4"
+    video.write_bytes(b"\x00" * 16)
+    with pytest.raises(uploader.UploadError, match="2MB"):
+        uploader.extract_thumbnail(video, tmp_path / "thumb.jpg", 1.5)
+    assert calls["n"] == 2  # full frame, then shrink attempt
+
+
+def test_extract_thumbnail_ffmpeg_missing(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    def _boom(cmd, **kwargs):
+        raise FileNotFoundError("no ffmpeg")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    video = tmp_path / "day.mp4"
+    video.write_bytes(b"\x00" * 16)
+    with pytest.raises(uploader.UploadError, match="extraction failed"):
+        uploader.extract_thumbnail(video, tmp_path / "thumb.jpg")
+
+
+class _FakeThumbs:
+    def __init__(self, exc=None):
+        self.exc = exc
+        self.video_id = None
+
+    def thumbnails(self):
+        return self
+
+    def set(self, videoId, media_body):
+        self.video_id = videoId
+
+        class _Exec:
+            def __init__(self, exc):
+                self.exc = exc
+
+            def execute(self):
+                if self.exc is not None:
+                    raise self.exc
+                return {}
+
+        return _Exec(self.exc)
+
+
+def test_set_thumbnail_calls_api(tmp_path: Path):
+    img = tmp_path / "thumb.jpg"
+    img.write_bytes(b"\xff" * 64)
+    svc = _FakeThumbs()
+    uploader.set_thumbnail(svc, "vid1", img)
+    assert svc.video_id == "vid1"
+
+
+def test_set_thumbnail_403_calls_out_unverified_channel(tmp_path: Path):
+    img = tmp_path / "thumb.jpg"
+    img.write_bytes(b"\xff" * 64)
+    with pytest.raises(uploader.UploadError, match="verified"):
+        uploader.set_thumbnail(_FakeThumbs(exc=_http_error(403)), "vid1", img)
+    with pytest.raises(uploader.UploadError, match="thumbnail upload failed"):
+        uploader.set_thumbnail(_FakeThumbs(exc=_http_error(500)), "vid1", img)
+
+
+def test_cli_upload_sets_thumbnail_and_survives_thumb_failure(
+        tmp_path: Path, monkeypatch, capsys):
+    from osu_pipeline.cli import main
+
+    out = tmp_path / "day.mp4"
+    out.write_bytes(b"\x00" * 16)
+    db = tmp_path / "p.sqlite"
+    _seed_daily(db, out)
+    cfg = _cfg(tmp_path)
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_ID", "cid")
+    monkeypatch.setenv("PIPELINE_YOUTUBE_CLIENT_SECRET", "sec")
+
+    class _Creds:
+        pass
+
+    seen = {}
+
+    class _Svc(_FakeService):
+        def thumbnails(self):
+            return _FakeThumbs()
+
+    def _fake_extract(video, dest, second):
+        seen["second"] = second
+        Path(dest).write_bytes(b"\xff" * 64)
+        return Path(dest)
+
+    monkeypatch.setattr(uploader, "load_credentials", lambda p: _Creds())
+    monkeypatch.setattr(uploader, "build_service",
+                        lambda c: _Svc([(None, {"id": "v9"})]))
+    monkeypatch.setattr(uploader, "upload_video", lambda *a, **k: "v9")
+    monkeypatch.setattr(uploader, "extract_thumbnail", _fake_extract)
+    orig_set = uploader.set_thumbnail
+    monkeypatch.setattr(uploader, "set_thumbnail",
+                        lambda svc, vid, img: seen.update(vid=vid) or orig_set(svc, vid, img))
+
+    assert main(["--config", str(cfg), "upload", "2026-09-06", "--force"]) == 0
+    assert seen == {"second": 2.0, "vid": "v9"}
+    assert "thumbnail set from t=2.0s" in capsys.readouterr().out
+
+    # thumbnail failure is cosmetic: upload still reports success
+    def _boom(video, dest, second):
+        raise uploader.UploadError("ffmpeg gone")
+
+    monkeypatch.setattr(uploader, "extract_thumbnail", _boom)
+    assert main(["--config", str(cfg), "upload", "2026-09-06", "--force"]) == 0
+    assert "thumbnail skipped" in capsys.readouterr().out
+
+
 def test_auth_flow_binds_configured_host(tmp_path: Path, monkeypatch):
     import google_auth_oauthlib.flow as flow_mod
 

@@ -94,6 +94,11 @@ token_path = "/data/db/youtube-token.json"
 # flip to public after the project audit passes.
 privacy = "unlisted"
 category_id = "20"
+# Custom thumbnail: frame grabbed this many seconds into the final video.
+# Set thumbnail = false to keep YouTube's auto-pick. The channel must be
+# verified for custom thumbnails or the API rejects it (video still uploads).
+thumbnail = true
+thumbnail_second = 2.0
 title_template = "osu!completionist journey — {day} ({clips} passes)"
 # Placeholders: {day} {clips} {span} {passed} {left} {pct} {remaining}
 # ({left} is the total pool, {remaining} = pool minus passed).

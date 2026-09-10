@@ -83,6 +83,8 @@ class PipelineConfig:
     youtube_category_id: str = "20"
     youtube_title_template: str = "OSU! Completionist — {day} ({clips} maps)"
     youtube_description_template: str = DEFAULT_YOUTUBE_DESCRIPTION
+    youtube_thumbnail: bool = True
+    youtube_thumbnail_second: float = 2.0
     prune_after_upload: bool = True
     # instagram (Milestone 7; token via env ONLY)
     instagram_user_id: str | None = None
@@ -149,6 +151,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     youtube_token_path = os.environ.get("PIPELINE_YOUTUBE_TOKEN_PATH")
     youtube_privacy = os.environ.get("PIPELINE_YOUTUBE_PRIVACY")
     youtube_description_template = os.environ.get("PIPELINE_YOUTUBE_DESCRIPTION_TEMPLATE")
+    youtube_thumbnail_raw = os.environ.get("PIPELINE_YOUTUBE_THUMBNAIL")
+    youtube_thumbnail_second_raw = os.environ.get("PIPELINE_YOUTUBE_THUMBNAIL_SECOND")
     instagram_user_id = os.environ.get("PIPELINE_INSTAGRAM_USER_ID")
     instagram_token = os.environ.get("PIPELINE_INSTAGRAM_TOKEN")
     render_timeout = os.environ.get("PIPELINE_RENDER_TIMEOUT")
@@ -248,6 +252,14 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
             prune_after_upload = bool(youtube.get("prune_after_upload", True))
         else:
             prune_after_upload = _prune_raw.strip().lower() in ("1", "true", "yes")
+        if youtube_thumbnail_raw is None:
+            youtube_thumbnail = bool(youtube.get("thumbnail", True))
+        else:
+            youtube_thumbnail = youtube_thumbnail_raw.strip().lower() in ("1", "true", "yes")
+        if youtube_thumbnail_second_raw is None:
+            youtube_thumbnail_second = float(youtube.get("thumbnail_second", 2.0))
+        else:
+            youtube_thumbnail_second = float(youtube_thumbnail_second_raw)
         instagram = data.get("instagram", {})
         instagram_user_id = instagram_user_id or instagram.get("user_id")
         instagram_api_version = instagram.get("api_version", "v25.0")
@@ -290,6 +302,10 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_category_id, youtube_title_template = "20", "OSU! Completionist — {day} ({clips} maps)"
         prune_after_upload = os.environ.get("PIPELINE_PRUNE_AFTER_UPLOAD", "true").strip().lower() in (
             "1", "true", "yes")
+        youtube_thumbnail = os.environ.get(
+            "PIPELINE_YOUTUBE_THUMBNAIL", "true").strip().lower() in ("1", "true", "yes")
+        youtube_thumbnail_second = float(os.environ.get(
+            "PIPELINE_YOUTUBE_THUMBNAIL_SECOND", "2.0"))
         instagram_api_version, instagram_caption_template = (
             "v25.0", "OSU! Completionist — {day} ({clips} maps)")
         fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -351,6 +367,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         youtube_category_id=youtube_category_id,
         youtube_title_template=youtube_title_template,
         youtube_description_template=youtube_description_template,
+        youtube_thumbnail=youtube_thumbnail,
+        youtube_thumbnail_second=youtube_thumbnail_second,
         prune_after_upload=prune_after_upload,
         instagram_user_id=instagram_user_id,
         instagram_token=instagram_token,

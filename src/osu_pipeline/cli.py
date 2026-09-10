@@ -891,6 +891,19 @@ def _upload_youtube(conn, cfg, args, row: dict, video: Path) -> int:
     url = uploader.video_url(video_id)
     database.mark_uploaded(conn, args.day, "youtube", video_id, url)
     print(f"uploaded {args.day} -> {url}")
+    if cfg.youtube_thumbnail:
+        import tempfile
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="ytthumb-") as tmpdir:
+                thumb = uploader.extract_thumbnail(
+                    video, Path(tmpdir) / "thumb.jpg", cfg.youtube_thumbnail_second)
+                uploader.set_thumbnail(service, video_id, thumb)
+            print(f"thumbnail set from t={cfg.youtube_thumbnail_second:.1f}s")
+        except uploader.UploadError as exc:
+            # cosmetic only: the video is already up, never fail the job over it
+            log.warning("thumbnail skipped for %s: %s", args.day, exc)
+            print(f"thumbnail skipped ({exc})")
     if cfg.prune_after_upload:
         try:
             n, freed = prune_day_renders(conn, args.day)
