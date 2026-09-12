@@ -61,6 +61,26 @@ def test_still_and_dissolve_commands(tmp_path: Path, monkeypatch):
     assert "-loop" in seen["cmds"][1]
 
 
+def test_seg_still_first_and_last(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    seen = {}
+
+    def _fake_run(cmd, **kwargs):
+        seen.setdefault("cmds", []).append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    seg = tmp_path / "seg.mp4"
+    seg.write_bytes(b"\x00" * 16)
+    compositor.encode_seg_still("ffmpeg", seg, tmp_path / "first.png", last=False)
+    compositor.encode_seg_still("ffmpeg", seg, tmp_path / "last.png", last=True)
+    first, last_cmd = seen["cmds"]
+    assert "-sseof" not in first and first[first.index("-i") + 1] == str(seg)
+    assert "-sseof" in last_cmd and last_cmd[last_cmd.index("-sseof") + 1] == "-0.1"
+    assert last_cmd[last_cmd.index("-frames:v") + 1] == "1"
+
+
 def test_grid_dims():
     assert compositor.grid_dims(1) == (1, 1)
     assert compositor.grid_dims(4) == (3, 2)  # round(sqrt(4*1.92))=3

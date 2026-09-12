@@ -135,9 +135,8 @@ def test_compose_degrades_oversized_morph_to_dissolve(tmp_path: Path, monkeypatc
         calls["morph"] += 1
         Path(a[4]).write_bytes(b"morph")
 
-    def _encode_still(ffmpeg, items, graph, out_path, at, *a, **k):
+    def _encode_seg_still(ffmpeg, seg_mp4, out_path, last, *a, **k):
         calls["still"] += 1
-        Path(graph).write_text("graph")
         Path(out_path).write_bytes(b"still")
 
     def _encode_dissolve(ffmpeg, a, b, duration, fps, out_path, preset, crf, *args, **k):
@@ -146,7 +145,7 @@ def test_compose_degrades_oversized_morph_to_dissolve(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(compositor, "encode_segment", _encode_seg)
     monkeypatch.setattr(compositor, "encode_morph", _encode_morph)
-    monkeypatch.setattr(compositor, "encode_still", _encode_still)
+    monkeypatch.setattr(compositor, "encode_seg_still", _encode_seg_still)
     monkeypatch.setattr(compositor, "encode_dissolve", _encode_dissolve)
     monkeypatch.setattr(
         compositor, "concat_segments",

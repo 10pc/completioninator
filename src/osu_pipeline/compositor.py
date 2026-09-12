@@ -481,6 +481,20 @@ def encode_still(ffmpeg: str, items: list[tuple["Clip", Rect]], graph_file: Path
     subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
 
 
+def encode_seg_still(ffmpeg: str, seg_path: Path, out_path: Path,
+                     last: bool, timeout: int = 60) -> None:
+    """Single-frame PNG from an already-encoded segment: its first frame,
+    or a frame within 0.1s of its end via -sseof. One input, seconds of work —
+    this is what makes oversized-morph dissolves cheap."""
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+    if last:
+        cmd += ["-sseof", "-0.1"]
+    cmd += ["-i", str(seg_path), "-frames:v", "1", str(out_path)]
+    log.info("encoding %s frame still from %s", "last" if last else "first",
+             seg_path.name)
+    subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+
+
 def encode_dissolve(ffmpeg: str, still_a: Path, still_b: Path, duration: float,
                     fps: int, out_path: Path, preset: str, crf: int,
                     timeout: int = 300) -> None:

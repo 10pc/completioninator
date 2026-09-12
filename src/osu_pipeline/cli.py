@@ -500,6 +500,22 @@ def _cmd_progress(args, cfg) -> int:
     return 0
 
 
+def _dissolve_neighbors(timeline: list, i: int):
+    """Indices of the nearest static spans around morph timeline[i].
+
+    Returns (prev, next), either of which may be None; None as a whole only
+    when the morph stands alone with no static span at all (then the caller
+    keeps the glide path).
+    """
+    prev = next((j for j in range(i - 1, -1, -1)
+                 if isinstance(timeline[j], compositor.Segment)), None)
+    nxt = next((j for j in range(i + 1, len(timeline))
+                if isinstance(timeline[j], compositor.Segment)), None)
+    if prev is None and nxt is None:
+        return None
+    return prev, nxt
+
+
 def _cmd_compose(args, cfg) -> int:
     """Rolling batch: all rendered-but-uncomposited clips -> shrinking-grid video."""
     try:
@@ -590,62 +606,69 @@ def _cmd_compose(args, cfg) -> int:
     n_morph = len(timeline) - n_seg
     print(f"encoding {n_seg} static + {n_morph} morph spans"
           f"{' + outro' if outro_dur else ''} -> {out_path}")
-    seg_paths = []
+    seg_paths: list = [None] * len(timeline)
     video_tmp = workdir / "video.mp4"
     audio_tmp = workdir / "audio.m4a"
     clips_by_id = {c.id: c for c in kept}
     content_len = max(c.duration for c in kept)
     total_len = content_len + outro_dur
     try:
+        # pass 1: statics first — oversized morphs dissolve between the
+        # neighboring encoded segments, so those must exist before pass 2.
         for i, span_item in enumerate(timeline):
+            if isinstance(span_item, compositor.MorphSpan):
+                continue
             seg_path = workdir / f"seg-{i:03d}.mp4"
             graph = workdir / f"seg-{i:03d}.txt"
             seg_timeout = max(600, int(span_item.length * 10) + 120)
             seg_timeout = min(seg_timeout, cfg.compose_timeout)
             last = i == len(timeline) - 1
-            if isinstance(span_item, compositor.MorphSpan):
-                if len(span_item.tiles) > cfg.morph_glide_max_tiles:
-                    # Oversized morph: the per-tile glide chain blows past
-                    # memory/time past ~150 tiles, so dissolve between the
-                    # two layouts instead (proven static path + one xfade).
-                    n_tiles = len(span_item.tiles)
-                    print(f"morph {span_item.start:.1f}s-{span_item.end:.1f}s "
-                          f"({n_tiles} tiles): glide degraded to dissolve")
-                    items_a, items_b = compositor.morph_layouts(span_item, clips_by_id)
-                    graph_a = workdir / f"seg-{i:03d}-a.txt"
-                    graph_b = workdir / f"seg-{i:03d}-b.txt"
-                    still_a = workdir / f"seg-{i:03d}-a.png"
-                    still_b = workdir / f"seg-{i:03d}-b.png"
-                    graph_a.write_text(compositor.build_placed_graph(
-                        items_a, cfg.video_width, grid_h, cfg.header_height,
-                        cfg.video_fps, header, cfg.fontfile, 36))
-                    graph_b.write_text(compositor.build_placed_graph(
-                        items_b, cfg.video_width, grid_h, cfg.header_height,
-                        cfg.video_fps, header, cfg.fontfile, 36))
-                    compositor.encode_still(ffmpeg, items_a, graph_a, still_a,
-                                            span_item.start)
-                    compositor.encode_still(ffmpeg, items_b, graph_b, still_b,
-                                            span_item.end)
-                    compositor.encode_dissolve(ffmpeg, still_a, still_b, span_item.length,
-                                               cfg.video_fps, seg_path,
-                                               cfg.video_preset, cfg.video_crf)
-                else:
-                    script, ordered = compositor.build_morph_graph(
-                        span_item, clips_by_id, cfg.video_width, grid_h,
-                        cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36)
-                    graph.write_text(script)
-                    compositor.encode_morph(ffmpeg, span_item, ordered, cfg.video_width, grid_h,
-                                            cfg.header_height, cfg.video_fps, graph, seg_path,
-                                            cfg.video_preset, cfg.video_crf, seg_timeout)
+            graph.write_text(compositor.build_segment_graph(
+                span_item, cfg.video_width, grid_h,
+                cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36,
+                fade_out=1.0 if last and outro_dur else 0.0))
+            compositor.encode_segment(ffmpeg, span_item, graph, seg_path,
+                                      cfg.video_fps, cfg.video_preset, cfg.video_crf,
+                                      seg_timeout)
+            seg_paths[i] = seg_path
+        # pass 2: morphs — glide, or dissolve for oversized tile counts
+        for i, span_item in enumerate(timeline):
+            if not isinstance(span_item, compositor.MorphSpan):
+                continue
+            seg_path = workdir / f"seg-{i:03d}.mp4"
+            graph = workdir / f"seg-{i:03d}.txt"
+            seg_timeout = max(600, int(span_item.length * 10) + 120)
+            seg_timeout = min(seg_timeout, cfg.compose_timeout)
+            if (len(span_item.tiles) > cfg.morph_glide_max_tiles
+                    and _dissolve_neighbors(timeline, i) is not None):
+                # Oversized morph: the per-tile glide chain blows past
+                # memory/time past ~150 tiles, and multi-input stills take
+                # minutes per frame in seeks — so dissolve between the
+                # neighboring encoded segments (one input per still) instead.
+                n_tiles = len(span_item.tiles)
+                print(f"morph {span_item.start:.1f}s-{span_item.end:.1f}s "
+                      f"({n_tiles} tiles): glide degraded to dissolve")
+                prev, nxt = _dissolve_neighbors(timeline, i)
+                a_idx = prev if prev is not None else nxt
+                b_idx = nxt if nxt is not None else prev
+                still_a = workdir / f"seg-{i:03d}-a.png"
+                still_b = workdir / f"seg-{i:03d}-b.png"
+                compositor.encode_seg_still(ffmpeg, seg_paths[a_idx], still_a,
+                                            last=prev is not None)
+                compositor.encode_seg_still(ffmpeg, seg_paths[b_idx], still_b,
+                                            last=False)
+                compositor.encode_dissolve(ffmpeg, still_a, still_b, span_item.length,
+                                           cfg.video_fps, seg_path,
+                                           cfg.video_preset, cfg.video_crf)
             else:
-                graph.write_text(compositor.build_segment_graph(
-                    span_item, cfg.video_width, grid_h,
-                    cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36,
-                    fade_out=1.0 if last and outro_dur else 0.0))
-                compositor.encode_segment(ffmpeg, span_item, graph, seg_path,
-                                          cfg.video_fps, cfg.video_preset, cfg.video_crf,
-                                          seg_timeout)
-            seg_paths.append(seg_path)
+                script, ordered = compositor.build_morph_graph(
+                    span_item, clips_by_id, cfg.video_width, grid_h,
+                    cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36)
+                graph.write_text(script)
+                compositor.encode_morph(ffmpeg, span_item, ordered, cfg.video_width, grid_h,
+                                        cfg.header_height, cfg.video_fps, graph, seg_path,
+                                        cfg.video_preset, cfg.video_crf, seg_timeout)
+            seg_paths[i] = seg_path
         if outro_dur:
             outro_path = workdir / "seg-outro.mp4"
             outro_graph = workdir / "seg-outro.txt"
