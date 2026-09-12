@@ -242,6 +242,42 @@ def drawtext_filter(text: str, fontfile: str, fontsize: int, y: int,
             f"fontcolor={fontcolor}:x=(w-text_w)/2:y={y}")
 
 
+def build_placed_graph(items: list[tuple["Clip", Rect]], width: int, grid_h: int,
+                       header_h: int, fps: int, header: str, fontfile: str,
+                       fontsize: int, fade_out: float = 0.0,
+                       fade_start: float = 0.0) -> str:
+    """Static grid graph for explicitly placed (clip, rect) items.
+
+    Same canvas/header/pad conventions as build_segment_graph, but tile
+    boxes are caller-supplied instead of grid-derived — the morph dissolve
+    endpoints use arbitrary start/end rects. fade_out > 0 fades the canvas
+    out over fade_out seconds starting at fade_start (segment tail fade).
+    """
+    k = len(items)
+    chains = []
+    if k == 1:
+        _clip, r = items[0]
+        chains.append(f"[0:v]scale={r.w}:{r.h},setsar=1,"
+                      f"fps={fps},setpts=PTS-STARTPTS,"
+                      f"pad={width}:{grid_h + header_h}:{r.x}:{r.y}:black[vgrid]")
+    else:
+        for i, (_clip, r) in enumerate(items):
+            chains.append(
+                f"[{i}:v]scale={r.w}:{r.h},setsar=1,"
+                f"fps={fps},setpts=PTS-STARTPTS[v{i}]")
+        labels = "".join(f"[v{i}]" for i in range(k))
+        layout = "|".join(f"{r.x}_{r.y}" for _, r in items)
+        chains.append(
+            f"{labels}xstack=inputs={k}:layout={layout}:fill=black[vgrid]")
+    chains.append(f"[vgrid]{drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)}[vhead]")
+    if fade_out > 0 and fade_start > 0:
+        chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vpad]")
+        chains.append(f"[vpad]fade=t=out:st={fade_start:.3f}:d={fade_out:.3f}[vout]")
+    else:
+        chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vout]")
+    return ";\n".join(chains) + "\n"
+
+
 def build_segment_graph(seg: Segment, width: int, grid_h: int,
                          header_h: int, fps: int, header: str, fontfile: str,
                          fontsize: int, fade_out: float = 0.0) -> str:
@@ -255,32 +291,10 @@ def build_segment_graph(seg: Segment, width: int, grid_h: int,
     cols, rows = grid_dims(k)
     tw, th = tile_size(cols, rows, width, grid_h)
     rects = layout_rects(cols, rows, k, tw, th, width, grid_h, header_h)
-    chains = []
-    if k == 1:
-        # xstack needs >= 2 inputs; paint the lone tile straight onto the
-        # full canvas. Coordinates are absolute (header included), exactly
-        # like the xstack layout positions below — forgetting the header
-        # offset parks the tile 80px too high under the header text.
-        r = rects[0]
-        chains.append(f"[0:v]scale={tw}:{th},setsar=1,"
-                      f"fps={fps},setpts=PTS-STARTPTS,"
-                      f"pad={width}:{grid_h + header_h}:{r.x}:{r.y}:black[vgrid]")
-    else:
-        for i, r in enumerate(rects):
-            chains.append(
-                f"[{i}:v]scale={tw}:{th},setsar=1,"
-                f"fps={fps},setpts=PTS-STARTPTS[v{i}]")
-        labels = "".join(f"[v{i}]" for i in range(k))
-        layout = "|".join(f"{r.x}_{r.y}" for r in rects)
-        chains.append(
-            f"{labels}xstack=inputs={k}:layout={layout}:fill=black[vgrid]")
-    chains.append(f"[vgrid]{drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)}[vhead]")
-    if fade_out > 0 and seg.length > fade_out:
-        chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vpad]")
-        chains.append(f"[vpad]fade=t=out:st={seg.length - fade_out:.3f}:d={fade_out:.3f}[vout]")
-    else:
-        chains.append(f"[vhead]pad={width}:{grid_h + header_h}:0:0:black[vout]")
-    return ";\n".join(chains) + "\n"
+    fade_start = seg.length - fade_out if seg.length > fade_out else 0.0
+    return build_placed_graph(list(zip(seg.active, rects)), width, grid_h,
+                              header_h, fps, header, fontfile, fontsize,
+                              fade_out=fade_out, fade_start=fade_start)
 
 
 def build_outro_graph(width: int, height: int, duration: float, line1: str, line2: str,
@@ -444,6 +458,44 @@ def encode_morph(ffmpeg: str, span: MorphSpan, ordered_clips: list[Clip],
             "-pix_fmt", "yuv420p", "-r", str(fps),
             "-an", str(out_path)]
     log.info("encoding morph %.1fs-%.1fs (%d tiles)", span.start, span.end, len(ordered_clips))
+    subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+
+
+def morph_layouts(span: MorphSpan, clips_by_id: dict) -> tuple[list, list]:
+    """Start/end (clip, rect) placements for a morph span's dissolve endpoints."""
+    ordered = [clips_by_id[t.clip_id] for t in span.tiles]
+    items_a = [(c, Rect(t.ax, t.ay, t.aw, t.ah)) for c, t in zip(ordered, span.tiles)]
+    items_b = [(c, Rect(t.bx, t.by, t.bw, t.bh)) for c, t in zip(ordered, span.tiles)]
+    return items_a, items_b
+
+
+def encode_still(ffmpeg: str, items: list[tuple["Clip", Rect]], graph_file: Path,
+                 out_path: Path, at: float, timeout: int = 120) -> None:
+    """Single-frame PNG of an explicit placement at content time `at`."""
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+    for c, _r in items:
+        cmd += ["-ss", f"{at:.3f}", "-i", str(c.path)]
+    cmd += ["-filter_complex_script", str(graph_file),
+            "-map", "[vout]", "-frames:v", "1", str(out_path)]
+    log.info("encoding still @%.1fs (%d tiles)", at, len(items))
+    subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+
+
+def encode_dissolve(ffmpeg: str, still_a: Path, still_b: Path, duration: float,
+                    fps: int, out_path: Path, preset: str, crf: int,
+                    timeout: int = 300) -> None:
+    """Crossfade between two layout stills. Two inputs and one xfade: the
+    fallback when a morph's tile count would OOM (or outlast the segment
+    budget) with the per-tile glide chain."""
+    cmd = ["ffmpeg", "-y", "-v", "error",
+           "-loop", "1", "-framerate", str(fps), "-t", f"{duration:.3f}", "-i", str(still_a),
+           "-loop", "1", "-framerate", str(fps), "-t", f"{duration:.3f}", "-i", str(still_b),
+           "-filter_complex", f"[0:v][1:v]xfade=transition=fade:duration={duration:.3f}:offset=0,"
+           f"format=yuv420p,fps={fps}[vout]",
+           "-map", "[vout]", "-frames:v", str(max(1, int(round(duration * fps)))),
+           "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+           "-pix_fmt", "yuv420p", "-r", str(fps), "-an", str(out_path)]
+    log.info("encoding dissolve %.1fs", duration)
     subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
 
 

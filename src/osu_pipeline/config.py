@@ -68,6 +68,7 @@ class PipelineConfig:
     compose_timeout: int = 1800
     morph_seconds: float = 1.0
     segment_quant: float = 0.5
+    morph_glide_max_tiles: int = 120
     outro_seconds: float = 6.0
     outro_fontsize: int = 72
     outro_fontsize_sub: int = 54
@@ -225,6 +226,9 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
                                              video.get("morph_seconds", 1.0)))
         segment_quant = float(os.environ.get("PIPELINE_SEGMENT_QUANT",
                                              video.get("segment_quant", 0.5)))
+        _gmt = os.environ.get("PIPELINE_MORPH_GLIDE_MAX_TILES")
+        morph_glide_max_tiles = int(_gmt) if _gmt is not None else int(
+            video.get("morph_glide_max_tiles", 120))
         outro_seconds = float(video.get("outro_seconds", 6.0))
         outro_fontsize = int(video.get("outro_fontsize", 72))
         outro_fontsize_sub = int(video.get("outro_fontsize_sub", 54))
@@ -298,6 +302,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         audio_max_tracks = int(audio_max_tracks or 10)
         video_preset, video_crf, compose_timeout = "veryfast", 23, 1800
         morph_seconds = float(os.environ.get("PIPELINE_MORPH_SECONDS", 1.0))
+        morph_glide_max_tiles = int(os.environ.get("PIPELINE_MORPH_GLIDE_MAX_TILES", "120"))
         _sq = os.environ.get("PIPELINE_SEGMENT_QUANT")
         segment_quant = float(_sq) if _sq is not None else 0.5
         outro_seconds, outro_fontsize, outro_fontsize_sub = 6.0, 72, 54
@@ -364,6 +369,7 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         compose_timeout=compose_timeout,
         morph_seconds=morph_seconds,
         segment_quant=segment_quant,
+        morph_glide_max_tiles=morph_glide_max_tiles,
         outro_seconds=outro_seconds,
         outro_fontsize=outro_fontsize,
         outro_fontsize_sub=outro_fontsize_sub,

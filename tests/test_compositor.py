@@ -10,6 +10,57 @@ def _clip(i, duration, day="2026-09-06"):
                            duration=duration, has_audio=True)
 
 
+def test_placed_graph_uses_explicit_rects():
+    clips = [_clip(1, 10.0), _clip(2, 10.0)]
+    items = [(clips[0], compositor.Rect(10, 90, 320, 180)),
+             (clips[1], compositor.Rect(340, 90, 320, 180))]
+    script = compositor.build_placed_graph(
+        items, 1920, 1000, 80, 30, "H", "font.ttf", 36)
+    assert "xstack=inputs=2:layout=10_90|340_90" in script
+    assert "scale=320:180" in script
+    # single tile takes the pad path, no xstack
+    solo = compositor.build_placed_graph(
+        items[:1], 1920, 1000, 80, 30, "H", "font.ttf", 36)
+    assert "xstack" not in solo and "pad=1920:1080:10:90" in solo
+
+
+def test_morph_layouts_preserve_order_and_endpoints():
+    clips = {1: _clip(1, 40.0), 2: _clip(2, 40.0)}
+    span = compositor.MorphSpan(start=30.0, end=31.0, tiles=[
+        compositor.MorphTile(1, 0, 80, 100, 60, 10, 90, 200, 120, False),
+        compositor.MorphTile(2, 100, 80, 100, 60, 210, 90, 200, 120, True),
+    ])
+    items_a, items_b = compositor.morph_layouts(span, clips)
+    assert [c.id for c, _r in items_a] == [1, 2]
+    assert items_a[0][1] == compositor.Rect(0, 80, 100, 60)
+    assert items_b[0][1] == compositor.Rect(10, 90, 200, 120)
+
+
+def test_still_and_dissolve_commands(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    seen = {}
+
+    def _fake_run(cmd, **kwargs):
+        seen.setdefault("cmds", []).append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    clips = [_clip(1, 40.0)]
+    items = [(clips[0], compositor.Rect(0, 80, 320, 180))]
+    graph = tmp_path / "g.txt"
+    graph.write_text("graph")
+    compositor.encode_still("ffmpeg", items, graph, tmp_path / "a.png", 30.0)
+    cmd = seen["cmds"][0]
+    assert cmd[cmd.index("-i") - 2:cmd.index("-i")] == ["-ss", "30.000"]
+    assert "1" in cmd[cmd.index("-frames:v") + 1:cmd.index("-frames:v") + 2]
+    compositor.encode_dissolve("ffmpeg", tmp_path / "a.png", tmp_path / "b.png",
+                               1.0, 30, tmp_path / "seg.mp4", "veryfast", 23)
+    dcmd = " ".join(seen["cmds"][1])
+    assert "xfade=transition=fade:duration=1.000:offset=0" in dcmd
+    assert "-loop" in seen["cmds"][1]
+
+
 def test_grid_dims():
     assert compositor.grid_dims(1) == (1, 1)
     assert compositor.grid_dims(4) == (3, 2)  # round(sqrt(4*1.92))=3

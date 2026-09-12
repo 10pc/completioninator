@@ -102,6 +102,75 @@ def test_compose_happy_path(tmp_path: Path, monkeypatch, capsys):
         conn.close()
 
 
+def test_compose_degrades_oversized_morph_to_dissolve(tmp_path: Path, monkeypatch, capsys):
+    out = tmp_path / "rendered"
+    out.mkdir()
+    daily = tmp_path / "daily"
+    db = tmp_path / "p.sqlite"
+    _seed_rendered(db, out)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[paths]\n"
+        f"database = {str(db)!r}\n"
+        f"working = {str(tmp_path / 'work')!r}\n"
+        f"rendered = {str(out)!r}\n"
+        "[video]\n"
+        f"daily = {str(daily)!r}\n"
+        "max_clips = 12\n"
+        "morph_glide_max_tiles = 2\n"  # 3-tile morph must dissolve
+    )
+    monkeypatch.setattr(compositor, "check_binaries", lambda: ("ffmpeg", "ffprobe"))
+    monkeypatch.setattr(
+        compositor, "probe_clip",
+        lambda ffprobe, src: compositor.Clip(
+            id=-1, path=Path(src), day=None,
+            duration=DURATIONS.get(src.name, 100.0), has_audio=True))
+    calls = {"morph": 0, "dissolve": 0, "still": 0}
+
+    def _encode_seg(ffmpeg, seg, graph, out_path, *a):
+        Path(graph).write_text("graph")
+        Path(out_path).write_bytes(b"seg")
+
+    def _encode_morph(ffmpeg, span, ordered, *a, **k):
+        calls["morph"] += 1
+        Path(a[4]).write_bytes(b"morph")
+
+    def _encode_still(ffmpeg, items, graph, out_path, at, *a, **k):
+        calls["still"] += 1
+        Path(graph).write_text("graph")
+        Path(out_path).write_bytes(b"still")
+
+    def _encode_dissolve(ffmpeg, a, b, duration, fps, out_path, preset, crf, *args, **k):
+        calls["dissolve"] += 1
+        Path(out_path).write_bytes(b"dissolve")
+
+    monkeypatch.setattr(compositor, "encode_segment", _encode_seg)
+    monkeypatch.setattr(compositor, "encode_morph", _encode_morph)
+    monkeypatch.setattr(compositor, "encode_still", _encode_still)
+    monkeypatch.setattr(compositor, "encode_dissolve", _encode_dissolve)
+    monkeypatch.setattr(
+        compositor, "concat_segments",
+        lambda ffmpeg, segs, out_path, workdir, timeout=600: Path(out_path).write_bytes(b"joined"))
+    monkeypatch.setattr(
+        compositor, "encode_audio_mix",
+        lambda ffmpeg, clips, graph, out_path, timeout, max_tracks=10: Path(out_path).write_bytes(b"mix"))
+    monkeypatch.setattr(
+        compositor, "mux_audio_video",
+        lambda ffmpeg, video, audio, out_path, timeout=600: Path(out_path).write_bytes(b"final"))
+    monkeypatch.setattr(
+        compositor, "encode_outro",
+        lambda ffmpeg, graph, out_path, preset, crf, timeout: Path(out_path).write_bytes(b"outro"))
+    from osu_pipeline import completion as completion_mod
+    monkeypatch.setattr(
+        completion_mod, "fetch_completion",
+        lambda url, timeout=30: completion_mod.CompletionStats("1,133", "147,163", "0.73%"))
+
+    assert main(["--config", str(cfg), "compose"]) == 0
+    # 3-tile morph dissolves, 2-tile morph still glides (threshold is strict >)
+    assert calls["dissolve"] == 1 and calls["still"] == 2 and calls["morph"] == 1
+    assert "degraded to dissolve" in capsys.readouterr().out
+
+
 def test_compose_nothing_to_do(tmp_path: Path, monkeypatch, capsys):
     db = tmp_path / "p.sqlite"
     database.init_db(db)

@@ -604,13 +604,39 @@ def _cmd_compose(args, cfg) -> int:
             seg_timeout = min(seg_timeout, cfg.compose_timeout)
             last = i == len(timeline) - 1
             if isinstance(span_item, compositor.MorphSpan):
-                script, ordered = compositor.build_morph_graph(
-                    span_item, clips_by_id, cfg.video_width, grid_h,
-                    cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36)
-                graph.write_text(script)
-                compositor.encode_morph(ffmpeg, span_item, ordered, cfg.video_width, grid_h,
-                                        cfg.header_height, cfg.video_fps, graph, seg_path,
-                                        cfg.video_preset, cfg.video_crf, seg_timeout)
+                if len(span_item.tiles) > cfg.morph_glide_max_tiles:
+                    # Oversized morph: the per-tile glide chain blows past
+                    # memory/time past ~150 tiles, so dissolve between the
+                    # two layouts instead (proven static path + one xfade).
+                    n_tiles = len(span_item.tiles)
+                    print(f"morph {span_item.start:.1f}s-{span_item.end:.1f}s "
+                          f"({n_tiles} tiles): glide degraded to dissolve")
+                    items_a, items_b = compositor.morph_layouts(span_item, clips_by_id)
+                    graph_a = workdir / f"seg-{i:03d}-a.txt"
+                    graph_b = workdir / f"seg-{i:03d}-b.txt"
+                    still_a = workdir / f"seg-{i:03d}-a.png"
+                    still_b = workdir / f"seg-{i:03d}-b.png"
+                    graph_a.write_text(compositor.build_placed_graph(
+                        items_a, cfg.video_width, grid_h, cfg.header_height,
+                        cfg.video_fps, header, cfg.fontfile, 36))
+                    graph_b.write_text(compositor.build_placed_graph(
+                        items_b, cfg.video_width, grid_h, cfg.header_height,
+                        cfg.video_fps, header, cfg.fontfile, 36))
+                    compositor.encode_still(ffmpeg, items_a, graph_a, still_a,
+                                            span_item.start)
+                    compositor.encode_still(ffmpeg, items_b, graph_b, still_b,
+                                            span_item.end)
+                    compositor.encode_dissolve(ffmpeg, still_a, still_b, span_item.length,
+                                               cfg.video_fps, seg_path,
+                                               cfg.video_preset, cfg.video_crf)
+                else:
+                    script, ordered = compositor.build_morph_graph(
+                        span_item, clips_by_id, cfg.video_width, grid_h,
+                        cfg.header_height, cfg.video_fps, header, cfg.fontfile, 36)
+                    graph.write_text(script)
+                    compositor.encode_morph(ffmpeg, span_item, ordered, cfg.video_width, grid_h,
+                                            cfg.header_height, cfg.video_fps, graph, seg_path,
+                                            cfg.video_preset, cfg.video_crf, seg_timeout)
             else:
                 graph.write_text(compositor.build_segment_graph(
                     span_item, cfg.video_width, grid_h,

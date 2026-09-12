@@ -69,6 +69,10 @@ crf = 23
 compose_timeout = 1800
 # glide seconds per grid resize; tiny gaps between finishes degrade to cuts
 morph_seconds = 1.0
+# morphs past this tile count degrade from the per-tile glide chain (which
+# OOMs past ~150 tiles) to a dissolve between the two layouts. 108 glides
+# fine, 167 does not; 120 keeps margin.
+morph_glide_max_tiles = 120
 # finish times are floored to this grid (seconds): near-identical durations
 # collapse into one boundary instead of sliver segments ffmpeg rejects.
 # Trims at most this much tail per clip; 0 disables (exact, fragile).
