@@ -30,6 +30,10 @@ class MissingCredentials(UploadError):
     """No client ID/secret configured."""
 
 
+class CredentialsExpired(UploadError):
+    """Stored OAuth grant is dead (revoked or testing-mode expiry)."""
+
+
 def _client_config(client_id: str, client_secret: str) -> dict:
     return {
         "installed": {
@@ -110,7 +114,14 @@ def run_auth_flow(client_id: str, client_secret: str, token_path: Path,
 
 
 def load_credentials(token_path: Path):
-    """Load stored credentials, refreshing if expired. None when absent."""
+    """Load stored credentials, refreshing if expired. None when absent.
+
+    Raises CredentialsExpired when Google rejects the refresh grant
+    (user revoked access, or testing-mode 7-day expiry): the operator must
+    re-run `auth-youtube`. Callers should surface this plainly instead of
+    a raw RefreshError traceback.
+    """
+    from google.auth.exceptions import RefreshError
     from google.oauth2.credentials import Credentials
 
     token_path = Path(token_path)
@@ -120,7 +131,14 @@ def load_credentials(token_path: Path):
     if creds and creds.expired and creds.refresh_token:
         from google.auth.transport.requests import Request
 
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except RefreshError as exc:
+            raise CredentialsExpired(
+                "youtube authorization expired or revoked "
+                f"({exc}); re-run `auth-youtube` to reconnect. "
+                "Tip: set the OAuth consent screen to Production to stop "
+                "testing-mode refresh tokens expiring after 7 days.") from exc
         token_path.write_text(creds.to_json())
     return creds if creds and creds.valid else None
 

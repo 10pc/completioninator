@@ -69,6 +69,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Print URL and read pasted callback from stdin (no callback server)")
     au.add_argument("--db", default=None, help="Override database path")
 
+    ast = sub.add_parser("auth-status", help="Check YouTube OAuth token health")
+
     up = sub.add_parser("upload", help="Upload a daily video")
     up.add_argument("day", help="YYYY-MM-DD of the daily video")
     up.add_argument("--platform", choices=("youtube", "instagram"), default="youtube")
@@ -884,6 +886,26 @@ def _cmd_auth_youtube(args, cfg) -> int:
     return 0
 
 
+def _cmd_auth_status(args, cfg) -> int:
+    """Token health without uploading: missing, dead grant, or authorized."""
+    from . import uploader
+
+    token = Path(cfg.youtube_token_path)
+    if not token.exists():
+        print(f"no token at {token}; run auth-youtube first")
+        return 1
+    try:
+        creds = uploader.load_credentials(token)
+    except uploader.CredentialsExpired as exc:
+        print(f"EXPIRED: {exc}", file=sys.stderr)
+        return 1
+    if creds is None:
+        print(f"token at {token} is unusable; run auth-youtube again", file=sys.stderr)
+        return 1
+    print(f"authorized (token: {token})")
+    return 0
+
+
 def _cmd_upload(args, cfg) -> int:
     from . import uploader
 
@@ -917,7 +939,13 @@ def _upload_youtube(conn, cfg, args, row: dict, video: Path) -> int:
     if not cfg.youtube_client_id or not cfg.youtube_client_secret:
         print("youtube client ID/secret not configured", file=sys.stderr)
         return 2
-    creds = uploader.load_credentials(cfg.youtube_token_path)
+    creds = None
+    try:
+        creds = uploader.load_credentials(cfg.youtube_token_path)
+    except uploader.CredentialsExpired as exc:
+        database.mark_upload_failed(conn, args.day, "youtube", str(exc)[-500:])
+        print(f"upload FAILED: {exc}", file=sys.stderr)
+        return 1
     if creds is None:
         print(f"not authorized; run auth-youtube first (token: {cfg.youtube_token_path})",
               file=sys.stderr)
@@ -1087,6 +1115,8 @@ def main(argv: list | None = None) -> int:
         return _cmd_daily(args, cfg)
     if args.command == "auth-youtube":
         return _cmd_auth_youtube(args, cfg)
+    if args.command == "auth-status":
+        return _cmd_auth_status(args, cfg)
     if args.command == "upload":
         return _cmd_upload(args, cfg)
     if args.command == "prune":

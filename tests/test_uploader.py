@@ -469,3 +469,46 @@ def test_auth_manual_full_roundtrip(tmp_path: Path, monkeypatch, capsys):
     assert "localhost:8091" in seen["redirect"]
     assert (tmp_path / "tok.json").exists()
     assert "approve" in capsys.readouterr().out
+
+
+def _dead_token_file(tmp_path: Path, monkeypatch):
+    import google.auth.exceptions as auth_exc
+    import google.oauth2.credentials as cred_mod
+
+    tok = tmp_path / "tok.json"
+    tok.write_text("{}")
+
+    class _Dead:
+        expired = True
+        refresh_token = "rt"
+        valid = False
+
+        def refresh(self, _req):
+            raise auth_exc.RefreshError("invalid_grant: Token has been expired or revoked.")
+
+    monkeypatch.setattr(
+        cred_mod.Credentials, "from_authorized_user_file",
+        classmethod(lambda cls, *a, **k: _Dead()))
+    return tok
+
+
+def test_revoked_grant_maps_to_reauth_error(tmp_path: Path, monkeypatch):
+    tok = _dead_token_file(tmp_path, monkeypatch)
+    with pytest.raises(uploader.CredentialsExpired, match="auth-youtube"):
+        uploader.load_credentials(tok)
+
+
+def test_auth_status_reports_missing_dead_and_ok(tmp_path: Path, monkeypatch, capsys):
+    from osu_pipeline.cli import main
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[paths]\n")
+    # missing file
+    monkeypatch.setenv("PIPELINE_YOUTUBE_TOKEN_PATH", str(tmp_path / "nope.json"))
+    assert main(["--config", str(cfg), "auth-status"]) == 1
+    assert "no token" in capsys.readouterr().out
+    # dead grant
+    tok = _dead_token_file(tmp_path, monkeypatch)
+    monkeypatch.setenv("PIPELINE_YOUTUBE_TOKEN_PATH", str(tok))
+    assert main(["--config", str(cfg), "auth-status"]) == 1
+    assert "EXPIRED" in capsys.readouterr().err
