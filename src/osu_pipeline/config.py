@@ -38,6 +38,8 @@ class PipelineConfig:
     render_max_attempts: int = 3
     render_limit_default: int = 10
     render_workers: int = 1
+    render_lo_max_seconds: float = 90.0
+    finale_upgrade: bool = True
     stale_after_minutes: float = 180
     disk_min_free_gb: float = 5.0
     working_dir: Path = Path("/data/working")
@@ -194,6 +196,14 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
             os.environ.get("PIPELINE_STALE_AFTER_MINUTES",
                            render.get("stale_after_minutes", 180)))
         limit_default = int(os.environ.get("PIPELINE_RENDER_LIMIT", str(render.get("limit_default", 10))))
+        _lo_raw = os.environ.get("PIPELINE_RENDER_LO_MAX_SECONDS")
+        render_lo_max_seconds = float(_lo_raw) if _lo_raw is not None else float(
+            render.get("lo_max_seconds", 90.0))
+        _fin_raw = os.environ.get("PIPELINE_FINALE_UPGRADE")
+        if _fin_raw is None:
+            finale_upgrade = bool(render.get("finale_upgrade", True))
+        else:
+            finale_upgrade = _fin_raw.strip().lower() in ("1", "true", "yes")
         mirror = mirror or beatmaps.get("mirror", "https://mirror.hinamizawa.ai")
         beatmap_backend = beatmap_backend or beatmaps.get("backend", "hinamizawa")
         if fallback_mirror is None:
@@ -282,6 +292,9 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
     else:
         render_timeout = int(render_timeout or 7200)
         render_workers = int(render_workers or 1)
+        render_lo_max_seconds = float(os.environ.get("PIPELINE_RENDER_LO_MAX_SECONDS", "90.0"))
+        finale_upgrade = os.environ.get("PIPELINE_FINALE_UPGRADE", "true").strip().lower() in (
+            "1", "true", "yes")
         stale_after_minutes = float(os.environ.get("PIPELINE_STALE_AFTER_MINUTES", 180))
         danser_extra = tuple(a for a in (danser_extra or "").split(",") if a.strip())
         min_free_gb = float(min_free_gb or 5.0)
@@ -341,6 +354,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         render_timeout_seconds=render_timeout,
         render_max_attempts=render_max_attempts,
         render_workers=render_workers,
+        render_lo_max_seconds=render_lo_max_seconds,
+        finale_upgrade=finale_upgrade,
         stale_after_minutes=stale_after_minutes,
         render_limit_default=limit_default,
         disk_min_free_gb=min_free_gb,

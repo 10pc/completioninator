@@ -149,6 +149,108 @@ def lookup_set_id_by_hash(mirror: str, beatmap_hash: str, timeout: int = 30) -> 
     return None
 
 
+def find_osu_for_hash(songs_dir: Path, beatmapset_id: int,
+                      beatmap_hash: str) -> Path | None:
+    """Path of the unpacked .osu matching the replay hash (md5 of bytes).
+
+    Same scan as replay_hash_in_songs, but returns the file so callers can
+    read map metadata (length for render-tier estimates). None when absent.
+    """
+    import hashlib
+
+    want = beatmap_hash.lower()
+    set_dir = Path(songs_dir) / str(beatmapset_id)
+    try:
+        osu_files = list(set_dir.rglob("*.osu"))
+    except OSError:
+        return None
+    for osu_file in osu_files:
+        try:
+            h = hashlib.md5()
+            with open(osu_file, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            if h.hexdigest().lower() == want:
+                return osu_file
+        except OSError:
+            continue
+    return None
+
+
+def estimate_map_seconds(osu_path: Path) -> float | None:
+    """Map length from the last hitobject end (seconds). Rough by design:
+    slider tails are approximated by their start time, so callers add margin.
+    None when the file is unreadable.
+    """
+    try:
+        text = Path(osu_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    in_objects = False
+    last_ms = 0
+    try:
+        for line in text.splitlines():
+            s = line.strip()
+            if not in_objects:
+                if s == "[HitObjects]":
+                    in_objects = True
+                continue
+            if s.startswith("[") or not s:
+                break
+            parts = s.split(",")
+            if len(parts) < 4:
+                continue
+            t = int(parts[2])
+            end = t
+            try:
+                otype = int(parts[3])
+            except ValueError:
+                continue
+            if otype & 8 and len(parts) > 5:  # spinner: endTime field
+                try:
+                    end = max(end, int(parts[5].split(":")[0]))
+                except ValueError:
+                    pass
+            last_ms = max(last_ms, end)
+    except ValueError:
+        return None
+    return last_ms / 1000.0 if last_ms > 0 else None
+
+
+# osrparse mod bits (standard osu! bitmask)
+_MOD_DT_NC = 64 | 512
+_MOD_HT = 256
+
+
+def estimate_replay_seconds(osr_path: Path, songs_dir: Path,
+                            beatmapset_id: int | None, beatmap_hash: str | None) -> float | None:
+    """Estimated replay length for render-tier selection.
+
+    Map length from the matching .osu, rate-adjusted by replay mods
+    (DT/NC x1.5, HT x0.75). None when anything is unknowable — callers fall
+    back to the default tier.
+    """
+    if not beatmapset_id or not beatmap_hash:
+        return None
+    osu_file = find_osu_for_hash(songs_dir, beatmapset_id, beatmap_hash)
+    if osu_file is None:
+        return None
+    base = estimate_map_seconds(osu_file)
+    if base is None:
+        return None
+    try:
+        from osrparse import Replay
+
+        mods = int(getattr(Replay.from_path(osr_path), "mods", 0) or 0)
+    except Exception:  # noqa: BLE001 - unknown mods, use unadjusted length
+        return base
+    if mods & _MOD_DT_NC:
+        return base / 1.5
+    if mods & _MOD_HT:
+        return base / 0.75
+    return base
+
+
 def set_checksums(base: str, beatmapset_id: int, timeout: int = 30) -> set[str] | None:
     """Best-effort: current difficulty checksums of a set (hinamizawa only).
 

@@ -161,6 +161,12 @@ def get_distinct_days(conn: sqlite3.Connection, limit: int = 10) -> list:
 
 # --- Render queue (Milestone 2) ---
 
+def get_replay(conn: sqlite3.Connection, replay_id: int) -> dict | None:
+    """Full replay row by id (for the finale upgrade's beatmap fields)."""
+    row = conn.execute("SELECT * FROM replays WHERE id = ?", (replay_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def claim_pending(conn: sqlite3.Connection, retries: int = 10) -> dict | None:
     """Atomically claim the oldest pending replay. Returns the row, or None if empty.
 

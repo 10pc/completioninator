@@ -81,6 +81,22 @@ def test_seg_still_first_and_last(tmp_path: Path, monkeypatch):
     assert last_cmd[last_cmd.index("-frames:v") + 1] == "1"
 
 
+def test_probe_clip_reports_dimensions(tmp_path: Path, monkeypatch):
+    import json
+    import subprocess
+
+    payload = {"format": {"duration": "42.5"},
+               "streams": [{"codec_type": "video", "width": 1920, "height": 1080},
+                           {"codec_type": "audio"}]}
+
+    def _fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    clip = compositor.probe_clip("ffprobe", tmp_path / "v.mp4")
+    assert (clip.duration, clip.width, clip.height, clip.has_audio) == (42.5, 1920, 1080, True)
+
+
 def test_grid_dims():
     assert compositor.grid_dims(1) == (1, 1)
     assert compositor.grid_dims(4) == (3, 2)  # round(sqrt(4*1.92))=3

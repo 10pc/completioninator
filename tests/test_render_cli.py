@@ -292,11 +292,11 @@ def test_unexpected_job_error_does_not_kill_batch(tmp_path: Path, monkeypatch, c
     real_render = stub.render
     calls = {"n": 0}
 
-    def flaky(replay_osr, job_stem):
+    def flaky(replay_osr, job_stem, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("simulated bug")
-        return real_render(replay_osr, job_stem)
+        return real_render(replay_osr, job_stem, **kw)
 
     monkeypatch.setattr(stub, "render", flaky)
     assert main(["--config", str(cfg), "render", "--limit", "5"]) == 0
@@ -323,7 +323,7 @@ def test_updated_map_parked_unrenderable(tmp_path: Path, monkeypatch, capsys):
     class DeadRenderer:
         cmd_prefix = [sys.executable]
 
-        def render(self, replay_osr, job_stem):
+        def render(self, replay_osr, job_stem, **kw):
             return RenderResult(False, None, "x\nBeatmap not found, closing...\n", error="exit 0")
 
     monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: DeadRenderer())
@@ -436,7 +436,7 @@ def _beatmap_miss_setup(tmp_path: Path, monkeypatch, bhash="deadbeef"):
     class DeadRenderer:
         cmd_prefix = [sys.executable]
 
-        def render(self, replay_osr, job_stem):
+        def render(self, replay_osr, job_stem, **kw):
             return RenderResult(False, None, "x\nBeatmap not found, closing...\n", error="exit 0")
 
     monkeypatch.setattr(cli_mod, "DanserRenderer", lambda **kw: DeadRenderer())

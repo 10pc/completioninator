@@ -22,6 +22,33 @@ log = logging.getLogger(__name__)
 
 MIN_MP4_BYTES = 100_000
 
+# Render tiers: output height -> danser settings profile. Shorts render at
+# 480p in the same wall time as 720p (measured 30.3s vs 28.4s) with much
+# smaller files, which is what keeps giant compose graphs out of OOM.
+# Profiles live baked into the image next to `pipeline`.
+RENDER_HEIGHTS = (480, 720, 1080)
+
+
+def profile_for_height(base_settings: str, height: int) -> str:
+    """Settings profile name for a tier: base itself at 720p."""
+    if height <= 480:
+        return f"{base_settings}-lo"
+    if height >= 1080:
+        return f"{base_settings}-hi"
+    return base_settings
+
+
+def select_render_height(estimate_s: float | None, lo_max_s: float) -> int:
+    """Render tier from estimated replay length. Unknown -> default 720p.
+
+    A small padding biases slider-heavy maps (tails underestimated) toward
+    the higher tier: a wrongly-high tier only costs bytes, a wrongly-low one
+    costs visible quality on small days.
+    """
+    if estimate_s is not None and estimate_s + 5.0 < lo_max_s:
+        return 480
+    return 720
+
 
 @dataclass
 class RenderResult:
@@ -58,11 +85,17 @@ class DanserRenderer:
     def output_for(self, job_stem: str) -> Path:
         return self.videos_dir / f"{job_stem}.mp4"
 
-    def render(self, replay_osr: Path, job_stem: str) -> RenderResult:
-        """Render one replay. Idempotent: existing valid output is reused."""
+    def render(self, replay_osr: Path, job_stem: str, force: bool = False,
+               height: int | None = None) -> RenderResult:
+        """Render one replay. Idempotent: existing valid output is reused.
+
+        force re-renders even when a valid output exists (resolution upgrades).
+        height re-renders when the reusable output was recorded at another
+        tier (retries after a tier change).
+        """
         expected = self.output_for(job_stem)
-        if expected.exists():
-            ok, duration = verify_output(expected)
+        if expected.exists() and not force:
+            ok, duration = verify_output(expected, expect_height=height)
             if ok:
                 log.info("reusing existing render %s", expected)
                 return RenderResult(True, expected, "reused existing output", duration)
@@ -131,8 +164,13 @@ def ensure_skin(danser_home: Path, settings: str, skin: str) -> None:
     log.info("danser skin -> %s (%s)", skin, profile)
 
 
-def verify_output(mp4: Path) -> tuple[bool, float | None]:
-    """Return (valid, duration_s). Size gate always; ffprobe duration when available."""
+def verify_output(mp4: Path, expect_height: int | None = None) -> tuple[bool, float | None]:
+    """Return (valid, duration_s). Size gate always; ffprobe duration when available.
+
+    expect_height re-validates the tier: a reusable file recorded at another
+    height fails so the job re-renders at the right one. Unknown height
+    (no ffprobe) passes through rather than looping re-renders.
+    """
     try:
         if not mp4.exists() or mp4.stat().st_size < MIN_MP4_BYTES:
             return False, None
@@ -144,10 +182,17 @@ def verify_output(mp4: Path) -> tuple[bool, float | None]:
     try:
         proc = subprocess.run(
             [ffprobe, "-v", "error", "-show_entries", "format=duration",
-             "-of", "json", str(mp4)],
+             "-show_entries", "stream=height", "-of", "json", str(mp4)],
             capture_output=True, text=True, timeout=60,
         )
-        duration = float(json.loads(proc.stdout)["format"]["duration"])
-        return duration > 0, duration
+        data = json.loads(proc.stdout)
+        duration = float(data["format"]["duration"])
+        if duration <= 0:
+            return False, None
+        if expect_height is not None:
+            heights = [s.get("height") for s in data.get("streams", []) if s.get("height")]
+            if heights and all(h != expect_height for h in heights):
+                return False, None
+        return True, duration
     except Exception:  # noqa: BLE001 - ffprobe failure just voids the duration tier
         return True, None

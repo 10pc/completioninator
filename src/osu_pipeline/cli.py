@@ -181,7 +181,7 @@ def _cmd_stop(args, cfg) -> int:
     return 0
 
 
-def _worker_loop(wid: int, cfg, renderer, beatmapset_id, state,
+def _worker_loop(wid: int, cfg, renderers, beatmapset_id, state,
                  stop_event: threading.Event, ensure_lock: threading.Lock) -> dict:
     """One worker: own DB connection, claims until budget out / queue empty / told to stop."""
     conn = database.connect(cfg.database_path)
@@ -206,7 +206,7 @@ def _worker_loop(wid: int, cfg, renderer, beatmapset_id, state,
             if job is None:
                 break
             try:
-                _render_one(conn, cfg, renderer, job, override_set_id=beatmapset_id,
+                _render_one(conn, cfg, renderers, job, override_set_id=beatmapset_id,
                             stats=local, ensure_lock=ensure_lock, stop_event=stop_event)
             except Exception as exc:  # noqa: BLE001 - one bad job must never kill the batch
                 log.exception("unexpected error on job-%s", job["id"])
@@ -226,13 +226,19 @@ def run_render(cfg, limit: int, beatmapset_id: int | None = None,
     """Render loop shared by `render` and `daily`. Returns (exit code, stats)."""
     db_path = cfg.database_path
     n_workers = max(1, workers or cfg.render_workers)
-    renderer = DanserRenderer(
-        danser_home=cfg.danser_home,
-        settings=cfg.danser_settings,
-        timeout_seconds=cfg.render_timeout_seconds,
-        extra_args=cfg.danser_extra_args,
-        skin=cfg.danser_skin,
-    )
+    from .renderer import profile_for_height, RENDER_HEIGHTS
+
+    renderers = {
+        h: DanserRenderer(
+            danser_home=cfg.danser_home,
+            settings=profile_for_height(cfg.danser_settings, h),
+            timeout_seconds=cfg.render_timeout_seconds,
+            extra_args=cfg.danser_extra_args,
+            skin=cfg.danser_skin,
+        )
+        for h in RENDER_HEIGHTS
+    }
+    renderer = renderers[720]
     if not Path(renderer.cmd_prefix[0]).exists():
         print(f"danser not found: {renderer.cmd_prefix[0]} (PIPELINE_DANSER_HOME={cfg.danser_home})",
               file=sys.stderr)
@@ -255,7 +261,7 @@ def run_render(cfg, limit: int, beatmapset_id: int | None = None,
     ensure_lock = threading.Lock()
     if n_workers == 1:
         try:
-            stats = _worker_loop(0, cfg, renderer, beatmapset_id, state, stop_event, ensure_lock)
+            stats = _worker_loop(0, cfg, renderers, beatmapset_id, state, stop_event, ensure_lock)
         except KeyboardInterrupt:
             print("\ninterrupted; current job returns to pending on the next run")
             return 130, _fresh_stats()
@@ -266,7 +272,7 @@ def run_render(cfg, limit: int, beatmapset_id: int | None = None,
     print(f"rendering with {n_workers} workers (limit {limit})")
     results: dict = {}
     threads = [threading.Thread(target=lambda i=i: results.setdefault(
-        i, _worker_loop(i, cfg, renderer, beatmapset_id, state, stop_event, ensure_lock)),
+        i, _worker_loop(i, cfg, renderers, beatmapset_id, state, stop_event, ensure_lock)),
         name=f"render-{i}", daemon=True) for i in range(n_workers)]
     try:
         for t in threads:
@@ -341,7 +347,7 @@ def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result)
     return result.error or "render failed", False
 
 
-def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
+def _render_one(conn, cfg, renderers: dict, job: dict, override_set_id,
                 stats: dict, ensure_lock: threading.Lock | None = None,
                 stop_event: threading.Event | None = None) -> None:
     jid = job["id"]
@@ -401,7 +407,7 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
                     # Every backend is down: stop claiming so the outage
                     # pauses the queue instead of burning all attempts.
                     print(f"[{tag}] beatmap services down; stopping run early "
-                          f"(unclaimed jobs untouched)")
+                           f"(unclaimed jobs untouched)")
                     stop_event.set()
                 return
             database.mark_failed(conn, jid, str(exc))
@@ -409,7 +415,18 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
             print(f"[{tag}] beatmap unavailable: {exc}")
             return
 
-    result = renderer.render(scratch, tag)
+    # Render tier from estimated replay length: shorts record at 480p in the
+    # same wall time (measured), shrinking the compose graphs that OOM. Any
+    # unknowable estimate falls back to the default 720p tier.
+    from .renderer import select_render_height
+
+    est = beatmaps.estimate_replay_seconds(scratch, cfg.songs_dir, set_id, bhash)
+    height = select_render_height(est, cfg.render_lo_max_seconds)
+    renderer = renderers.get(height) or renderers[720]
+    if est is not None:
+        print(f"[{tag}] estimated {est:.0f}s -> {height}p tier")
+
+    result = renderer.render(scratch, tag, height=height)
     log_file = cfg.logs_dir / f"{tag}.log"
     try:
         log_file.write_text(result.log_text, encoding="utf-8", errors="replace")
@@ -454,7 +471,8 @@ def _render_one(conn, cfg, renderer: DanserRenderer, job: dict, override_set_id,
         return
     database.mark_rendered(conn, jid, dest.as_posix())
     stats["rendered"] += 1
-    print(f"[{tag}] rendered -> {dest} ({result.duration_s}s)" if result.duration_s else f"[{tag}] rendered -> {dest}")
+    dur = f"{result.duration_s:.1f}s" if result.duration_s else "?"
+    print(f"[{tag}] rendered -> {dest} ({dur}, {height}p)")
 
 
 def _cmd_requeue(args, cfg) -> int:
@@ -518,6 +536,76 @@ def _dissolve_neighbors(timeline: list, i: int):
     return prev, nxt
 
 
+def _upgrade_finale(cfg, db_path: Path, kept: list, replay_paths: dict,
+                    ffprobe: str) -> None:
+    """Re-render the longest clip at 1080p for the fullscreen finale.
+
+    Exactly one danser job per compose, only when the record is lower-res.
+    Any failure degrades to the existing record (warn-only): the nightly
+    must never die over the money shot.
+    """
+    from .renderer import DanserRenderer
+
+    if not kept:
+        return
+    finale = max(kept, key=lambda c: c.duration)
+    if finale.height >= 1080:
+        return
+    rel = replay_paths.get(finale.id)
+    src = cfg.replays_dir / rel if rel else None
+    if src is None or not src.exists():
+        log.warning("finale job-%s source missing; keeping %sp record",
+                    finale.id, finale.height)
+        return
+    conn = database.connect(db_path)
+    try:
+        row = database.get_replay(conn, finale.id)
+    finally:
+        conn.close()
+    if row is None:
+        return
+    print(f"finale job-{finale.id} ({finale.duration:.0f}s): upgrading "
+          f"{finale.height}p -> 1080p")
+    tag = f"job-{finale.id}"
+    scratch = cfg.working_dir / f"{tag}-hi.osr"
+    try:
+        hi = DanserRenderer(danser_home=cfg.danser_home,
+                            settings=f"{cfg.danser_settings}-hi",
+                            timeout_seconds=cfg.render_timeout_seconds,
+                            extra_args=cfg.danser_extra_args,
+                            skin=cfg.danser_skin)
+        shutil.copyfile(src, scratch)
+        bhash = row["beatmap_hash"] or read_beatmap_hash(scratch)
+        set_id, _osz = beatmaps.ensure_beatmap(
+            cfg.beatmap_mirror, bhash, cfg.songs_dir,
+            override_set_id=row["beatmapset_id"],
+            osu_client_id=cfg.osu_client_id, osu_client_secret=cfg.osu_client_secret,
+            backend=cfg.beatmap_backend,
+            fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
+            fallback2_mirror=cfg.fallback2_mirror, fallback2_backend=cfg.fallback2_backend,
+            cache_dir=cfg.beatmaps_cache,
+        )
+        conn = database.connect(db_path)
+        try:
+            database.set_beatmap(conn, finale.id, bhash, set_id)
+        finally:
+            conn.close()
+        res = hi.render(scratch, tag, force=True, height=1080)
+        if not res.ok:
+            log.warning("finale upgrade render failed (%s); keeping %sp record",
+                        res.error, finale.height)
+            return
+        shutil.move(str(res.output), str(finale.path))
+        re = compositor.probe_clip(ffprobe, Path(finale.path))
+        if re is not None:
+            finale.width, finale.height = re.width, re.height
+        print(f"finale job-{finale.id} upgraded to {finale.height}p")
+    except Exception as exc:  # noqa: BLE001 - cosmetic path, never fatal
+        log.warning("finale upgrade failed (%s); keeping %sp record", exc, finale.height)
+    finally:
+        scratch.unlink(missing_ok=True)
+
+
 def _cmd_compose(args, cfg) -> int:
     """Rolling batch: all rendered-but-uncomposited clips -> shrinking-grid video."""
     try:
@@ -574,6 +662,12 @@ def _cmd_compose(args, cfg) -> int:
     span = f"{days[0]}..{days[-1]}" if len(days) > 1 else (days[0] if days else None)
     print(f"batch: {len(kept)} clips ({sum(c.duration for c in kept):.0f}s content), "
           f"{len(rolled)} roll forward to next batch")
+
+    # Finale upgrade: the longest clip ends fullscreen, so it alone records
+    # at 1080p (one bounded danser job; warn-only on failure).
+    if cfg.finale_upgrade:
+        replay_paths = {r["id"]: r["path"] for r in rows}
+        _upgrade_finale(cfg, db_path, kept, replay_paths, ffprobe)
 
     # Snapshot completion stats FIRST, before any encoding: the outro bakes
     # this exact snapshot in, and it is saved with the daily record.

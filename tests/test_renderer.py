@@ -258,3 +258,63 @@ def test_claim_stamps_and_stale_gate(tmp_path: Path):
         assert database.reset_stale_rendering(conn, older_than_minutes=180) == 1
     finally:
         conn.close()
+
+
+def test_tier_profiles_and_selection():
+    from osu_pipeline.renderer import RENDER_HEIGHTS, profile_for_height, select_render_height
+
+    assert RENDER_HEIGHTS == (480, 720, 1080)
+    assert profile_for_height("pipeline", 480) == "pipeline-lo"
+    assert profile_for_height("pipeline", 720) == "pipeline"
+    assert profile_for_height("pipeline", 1080) == "pipeline-hi"
+    assert profile_for_height("custom", 1080) == "custom-hi"
+    # 5s padding biases slider tails up: 85s still 720p, 80s drops to 480p
+    assert select_render_height(None, 90.0) == 720
+    assert select_render_height(200.0, 90.0) == 720
+    assert select_render_height(85.0, 90.0) == 720
+    assert select_render_height(80.0, 90.0) == 480
+
+
+def test_tier_profile_files_match_base():
+    repo = Path(__file__).resolve().parents[1]
+    base = json.loads((repo / "danser" / "settings" / "pipeline.json").read_text())
+    for name, w, h in (("pipeline-lo", 854, 480), ("pipeline-hi", 1920, 1080)):
+        data = json.loads((repo / "danser" / "settings" / f"{name}.json").read_text())
+        assert data["Recording"]["FrameWidth"] == w
+        assert data["Recording"]["FrameHeight"] == h
+        assert data["Skin"] == base["Skin"] and data["Gameplay"] == base["Gameplay"]
+
+
+def test_verify_output_height_gate(tmp_path: Path, monkeypatch):
+    import shutil
+    import subprocess
+
+    from osu_pipeline.renderer import verify_output
+
+    fake = {"format": {"duration": "10.0"}, "streams": [{"height": 720}]}
+
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: "ffprobe")
+
+    def _fake_run(cmd, **kwargs):
+        assert "-show_entries" in cmd and "stream=height" in " ".join(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(fake))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    mp4 = tmp_path / "v.mp4"
+    mp4.write_bytes(b"\x00" * 200_000)
+    assert verify_output(mp4) == (True, 10.0)
+    assert verify_output(mp4, expect_height=720) == (True, 10.0)
+    assert verify_output(mp4, expect_height=480)[0] is False
+
+
+def test_render_force_and_height_refire(tmp_path: Path):
+    r = _stub_renderer(tmp_path)
+    osr = tmp_path / "x.osr"
+    osr.write_bytes(b"fake")
+    assert r.render(osr, "job-1").ok
+    assert r.render(osr, "job-1").log_text == "reused existing output"
+    # force bypasses reuse
+    assert r.render(osr, "job-1", force=True).log_text != "reused existing output"
+    # height is only enforced when the binary agrees it can check (stub
+    # output is zeros: ffprobe fails -> graceful pass-through reuse)
+    assert r.render(osr, "job-1", height=480).log_text == "reused existing output"

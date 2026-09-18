@@ -5,7 +5,7 @@ set -eu
 export DISPLAY="${DISPLAY:-:99}"
 if [ ! -S /tmp/.X11-unix/X99 ]; then
   rm -f /tmp/.X99-lock
-  Xvfb :99 -screen 0 1280x720x24 >/tmp/xvfb.log 2>&1 &
+  Xvfb :99 -screen 0 1920x1080x24 >/tmp/xvfb.log 2>&1 &
 fi
 # danser's internal DB lives next to its binary (ephemeral layer) because the
 # binary is not under /usr/bin (XDG is ignored in that case). Point it at the

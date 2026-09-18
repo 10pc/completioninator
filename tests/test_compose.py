@@ -170,6 +170,86 @@ def test_compose_degrades_oversized_morph_to_dissolve(tmp_path: Path, monkeypatc
     assert "degraded to dissolve" in capsys.readouterr().out
 
 
+def test_finale_upgrade_rerenders_longest_at_1080p(tmp_path: Path, monkeypatch, capsys):
+    import types
+
+    from osu_pipeline import cli as cli_mod
+    from osu_pipeline import database
+    from osu_pipeline.renderer import RenderResult
+
+    out = tmp_path / "rendered"
+    out.mkdir()
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    (tmp_path / "replays").mkdir()
+    (tmp_path / "replays" / "long.osr").write_bytes(b"fake")
+    database.insert_replay(
+        conn, path="long.osr", sha256="s9", size=11, mtime_ns=1,
+        played_at="2026-09-06T00:00:00+00:00", day="2026-09-06",
+        status="rendered", beatmap_hash="h" * 32)
+    jid = conn.execute("SELECT id FROM replays").fetchone()["id"]
+    dest = out / "9.mp4"
+    dest.write_bytes(b"\x00" * 16)
+    conn.execute("UPDATE replays SET render_path = ?, beatmapset_id = 9 WHERE id = ?",
+                 (str(dest), jid))
+    conn.commit()
+    conn.close()
+
+    cfg = types.SimpleNamespace(
+        replays_dir=tmp_path / "replays", working_dir=tmp_path / "work",
+        danser_home=tmp_path / "danser", danser_settings="pipeline",
+        render_timeout_seconds=60, danser_extra_args=(), danser_skin="",
+        beatmap_mirror="m", songs_dir=tmp_path / "songs",
+        osu_client_id=None, osu_client_secret=None, beatmap_backend="x",
+        fallback_mirror=None, fallback_backend="x",
+        fallback2_mirror=None, fallback2_backend="x",
+        beatmaps_cache=tmp_path / "cache")
+    (tmp_path / "work").mkdir()
+
+    clips = [compositor.Clip(id=jid, path=dest, day="2026-09-06", duration=200.0,
+                             has_audio=True, width=1280, height=720)]
+    seen = {}
+
+    class _Hi:
+        def __init__(self, **kw):
+            seen["settings"] = kw.get("settings")
+
+        def render(self, osr, stem, force=False, height=None):
+            seen["force"] = force
+            outp = tmp_path / "danser" / "videos" / f"{stem}.mp4"
+            outp.parent.mkdir(parents=True, exist_ok=True)
+            outp.write_bytes(b"\x00" * 16)
+            return RenderResult(True, outp, "hi render", 200.0)
+
+    # _upgrade_finale imports DanserRenderer from the renderer module at call
+    # time, so patching the source attribute redirects construction.
+    import osu_pipeline.renderer as rend_mod
+    monkeypatch.setattr(rend_mod, "DanserRenderer", _Hi)
+    monkeypatch.setattr(cli_mod.beatmaps, "ensure_beatmap", lambda *a, **k: (9, tmp_path / "9.osz"))
+    monkeypatch.setattr(
+        compositor, "probe_clip",
+        lambda ffprobe, src: compositor.Clip(
+            id=-1, path=Path(src), day=None, duration=200.0,
+            has_audio=True, width=1920, height=1080))
+
+    cli_mod._upgrade_finale(cfg, db, clips, {jid: "long.osr"}, "ffprobe")
+    assert seen == {"settings": "pipeline-hi", "force": True}
+    assert clips[0].height == 1080
+    assert "upgraded to 1080p" in capsys.readouterr().out
+
+    # already-1080p finale: no render call
+    seen.clear()
+    clips[0].height = 1080
+    cli_mod._upgrade_finale(cfg, db, clips, {jid: "long.osr"}, "ffprobe")
+    assert seen == {}
+
+    # missing source: warn-only, clip untouched
+    clips[0].height = 720
+    cli_mod._upgrade_finale(cfg, db, clips, {jid: "gone.osr"}, "ffprobe")
+    assert seen == {} and clips[0].height == 720
+
+
 def test_compose_nothing_to_do(tmp_path: Path, monkeypatch, capsys):
     db = tmp_path / "p.sqlite"
     database.init_db(db)

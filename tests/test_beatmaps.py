@@ -331,3 +331,55 @@ def test_ensure_uses_cache_then_stages(mirror, tmp_path: Path, monkeypatch):
         mirror, None, songs, override_set_id=42, backend="mino",
         fallback_mirror=mirror, fallback_backend="mino", cache_dir=cache)
     assert set_id == 42 and hits["n"] == 1
+
+
+_OSU_FIXTURE = """osu! file format v14
+
+[General]
+AudioFilename: audio.mp3
+
+[HitObjects]
+64,96,1000,1,0,0:0:0:0:
+256,192,5000,2,0,B|356:192|456:192,1,100,2:0:0:0:
+100,100,9000,12,0,14000,0:0:0:0:
+"""
+
+
+def test_estimate_map_seconds_uses_last_end():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "m.osu"
+        p.write_text(_OSU_FIXTURE)
+        # spinner end (14000) wins over circle/slider starts
+        assert beatmaps.estimate_map_seconds(p) == 14.0
+    assert beatmaps.estimate_map_seconds(Path("/nonexistent.osu")) is None
+
+
+def test_estimate_replay_seconds_adjusts_rate(tmp_path: Path, monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+
+    import osrparse
+
+    songs = tmp_path / "songs" / "77"
+    songs.mkdir(parents=True)
+    osu = songs / "m.osu"
+    osu.write_bytes(b"[HitObjects]\n64,96,1000,1,0,0:0:0:0:\n256,192,59000,1,0,0:0:0:0:\n")
+    digest = hashlib.md5(osu.read_bytes()).hexdigest()
+
+    def _replay(mods):
+        monkeypatch.setattr(
+            osrparse.Replay, "from_path",
+            classmethod(lambda cls, p: SimpleNamespace(mods=mods)))
+        return beatmaps.estimate_replay_seconds(
+            tmp_path / "x.osr", tmp_path / "songs", 77, digest)
+
+    assert _replay(0) == 59.0
+    assert _replay(64) == 59.0 / 1.5  # DT
+    assert _replay(512) == 59.0 / 1.5  # NC implies DT speed
+    assert _replay(256) == 59.0 / 0.75  # HT
+    # unknown map -> None (callers fall back to default tier)
+    assert beatmaps.estimate_replay_seconds(
+        tmp_path / "x.osr", tmp_path / "songs", 77, "0" * 32) is None
+    assert beatmaps.estimate_replay_seconds(None, tmp_path, None, None) is None

@@ -29,6 +29,8 @@ class Clip:
     day: str | None
     duration: float
     has_audio: bool
+    width: int = 0
+    height: int = 0
 
 
 @dataclass
@@ -56,16 +58,20 @@ def probe_clip(ffprobe: str, path: Path, timeout: int = 60) -> Clip | None:
         proc = subprocess.run(
             [ffprobe, "-v", "error",
              "-show_entries", "format=duration",
-             "-show_entries", "stream=codec_type",
+             "-show_entries", "stream=codec_type,width,height",
              "-of", "json", str(path)],
             capture_output=True, text=True, timeout=timeout,
         )
         data = json.loads(proc.stdout)
         duration = float(data["format"]["duration"])
         has_audio = any(s.get("codec_type") == "audio" for s in data.get("streams", []))
+        dims = [(s.get("width") or 0, s.get("height") or 0)
+                for s in data.get("streams", []) if s.get("codec_type") == "video"]
+        width, height = max(dims, default=(0, 0))
         if duration <= 0:
             return None
-        return Clip(id=-1, path=path, day=None, duration=duration, has_audio=has_audio)
+        return Clip(id=-1, path=path, day=None, duration=duration,
+                    has_audio=has_audio, width=width, height=height)
     except Exception as exc:  # noqa: BLE001 - probe failure just skips the clip
         log.warning("probe failed for %s: %s", path, exc)
         return None
