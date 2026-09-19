@@ -909,7 +909,8 @@ def run_danser_grid(cfg, spec_path: Path, timeout: int) -> None:
     cmd = [binary, "-grid", os.fspath(spec_path), "-record",
            "-settings", cfg.danser_settings]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd, cwd=cfg.danser_home,
+                              capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise GridError(f"danser-grid timed out after {timeout}s") from exc
     if proc.returncode != 0:
@@ -928,7 +929,9 @@ def run_danser_grid_probe(cfg, spec_path: Path, out_path: Path) -> None:
            "-settings", cfg.danser_settings,
            "-probe-out", os.fspath(out_path)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=cfg.grid_timeout_seconds)
+        proc = subprocess.run(cmd, cwd=cfg.danser_home,
+                              capture_output=True, text=True,
+                              timeout=cfg.grid_timeout_seconds)
     except subprocess.TimeoutExpired as exc:
         raise GridError(f"danser-grid probe timed out after {cfg.grid_timeout_seconds}s") from exc
     if proc.returncode != 0:
