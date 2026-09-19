@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --depth 1 --branch ${DANSER_GRID_REF} https://github.com/10pc/danser-grid.git /src
 WORKDIR /src
 RUN go build -buildvcs=false -tags "exclude_cimgui_glfw exclude_cimgui_sdli" \
-        -ldflags "-X github.com/wieku/danser-go/build.Stream=Release -X github.com/wieku/danser-go/build.VERSION=0.11.0-grid" \
+        -ldflags "-X github.com/wieku/danser-go/build.Stream=Release -X github.com/wieku/danser-go/build.VERSION=0.11.0" \
         -o /out/danser-grid . \
     && cp libbass.so libbass_fx.so libbassmix.so libyuv.so /out/ \
     && ls -la /out/
