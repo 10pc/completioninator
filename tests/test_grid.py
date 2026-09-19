@@ -230,7 +230,10 @@ def test_compose_grid_happy_path(tmp_path: Path, monkeypatch, capsys):
     def _outro(ffmpeg, graph, out_path, preset, crf, timeout):
         Path(out_path).write_bytes(b"outro")
 
+    concats = []
+
     def _concat(ffmpeg, segs, out_path, workdir, timeout=600):
+        concats.append(([Path(s).name for s in segs], Path(out_path).name))
         Path(out_path).write_bytes(b"joined")
 
     def _finish(ffmpeg, src, graph, out_path, fps, preset, crf, timeout=600):
@@ -258,6 +261,11 @@ def test_compose_grid_happy_path(tmp_path: Path, monkeypatch, capsys):
     assert main(["--config", str(cfg), "compose", "--grid"]) == 0
     out_text = capsys.readouterr().out
     assert "batch: 2 clips" in out_text and "composed" in out_text
+    # finish pass runs on content only; outro joins after (else the tail
+    # fade would hold the outro black).
+    assert len(concats) == 2
+    assert all("seg-outro.mp4" not in segs for segs, _ in [concats[0]])
+    assert concats[1][0][-1] == "seg-outro.mp4"
     conn = database.connect(db)
     try:
         assert database.get_counts(conn)["composited"] == 2

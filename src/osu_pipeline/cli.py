@@ -1172,11 +1172,12 @@ def _cmd_compose_grid(args, cfg) -> int:
                 cfg.fontfile, cfg.outro_fontsize, cfg.outro_fontsize_sub))
             compositor.encode_outro(ffmpeg, outro_graph, outro_path,
                                     cfg.video_preset, cfg.video_crf, 600)
-            seg_paths.append(outro_path)
         compositor.concat_segments(ffmpeg, seg_paths, video_tmp, workdir)
         # Legacy parity: danser-grid spans are bare canvas (blank header bar,
         # no tail fade), so burn the header text and the 1s fade into the
-        # outro in one finishing pass over the concatenated content.
+        # outro in one finishing pass over the concatenated CONTENT. The
+        # outro joins after: fade=t=out would hold everything past its
+        # window black, so it must never see the outro.
         content_end = timeline[-1].end if timeline else content_len
         finish_graph = workdir / "finish.txt"
         finish_graph.write_text(compositor.build_grid_finish_graph(
@@ -1191,6 +1192,13 @@ def _cmd_compose_grid(args, cfg) -> int:
         video_tmp.unlink(missing_ok=True)
         finished_tmp.rename(video_tmp)
         (workdir / "finish.txt").unlink(missing_ok=True)
+        if outro_dur:
+            joined_tmp = workdir / "video-joined.mp4"
+            compositor.concat_segments(ffmpeg, [video_tmp, outro_path], joined_tmp,
+                                       workdir)
+            video_tmp.unlink(missing_ok=True)
+            joined_tmp.rename(video_tmp)
+            outro_path.unlink(missing_ok=True)
         audio_script, has_audio = compositor.build_audio_graph(
             kept, content_len, total_len, max_tracks=cfg.audio_max_tracks)
         if has_audio:
