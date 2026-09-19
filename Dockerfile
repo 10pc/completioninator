@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         git \
     && rm -rf /var/lib/apt/lists/*
+# Bust the clone cache whenever the branch moves (else Docker reuses a stale fork).
+ADD https://api.github.com/repos/10pc/danser-grid/commits/${DANSER_GRID_REF} /tmp/grid-ref.json
 RUN git clone --depth 1 --branch ${DANSER_GRID_REF} https://github.com/10pc/danser-grid.git /src
 WORKDIR /src
 RUN go build -buildvcs=false -tags "exclude_cimgui_glfw exclude_cimgui_sdli" \
