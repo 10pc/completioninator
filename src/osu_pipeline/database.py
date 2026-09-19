@@ -135,7 +135,7 @@ def get_counts(conn: sqlite3.Connection) -> dict:
     counts = {r["status"]: r["n"] for r in rows}
     total = conn.execute("SELECT COUNT(*) AS n FROM replays").fetchone()["n"]
     counts["discovered"] = total
-    for s in ("pending", "rendering", "rendered", "failed", "unrenderable", "excluded",
+    for s in ("pending", "rendering", "rendered", "ready", "failed", "unrenderable", "excluded",
               "composited"):
         counts.setdefault(s, 0)
     return counts
@@ -275,6 +275,24 @@ def mark_rendered(conn: sqlite3.Connection, replay_id: int, render_path: str) ->
         (render_path, _utcnow_iso(), replay_id),
     )
     conn.commit()
+
+
+def mark_ready(conn: sqlite3.Connection, replay_id: int) -> None:
+    """Grid path: beatmap ensured, awaiting batch compose (no render output)."""
+    conn.execute(
+        "UPDATE replays SET status = 'ready', error = NULL WHERE id = ?",
+        (replay_id,),
+    )
+    conn.commit()
+
+
+def get_ready(conn: sqlite3.Connection) -> list:
+    """Rows with ensured beatmaps awaiting grid compose, oldest first."""
+    rows = conn.execute(
+        "SELECT id, path, day, beatmap_hash, beatmapset_id FROM replays "
+        "WHERE status = 'ready' ORDER BY day, id"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def mark_failed(conn: sqlite3.Connection, replay_id: int, error: str) -> None:

@@ -31,6 +31,9 @@ class Clip:
     has_audio: bool
     width: int = 0
     height: int = 0
+    # mp3-source mixes: skip song intro so mix content aligns with gameplay
+    # the way -skip records do (0 = from the start, e.g. clip mp4 inputs).
+    audio_offset: float = 0.0
 
 
 @dataclass
@@ -413,6 +416,8 @@ def encode_audio_mix(ffmpeg: str, clips: list[Clip], graph_file: Path,
     voiced = select_mix_clips(clips, max_tracks)
     cmd = ["ffmpeg", "-y", "-v", "error"]
     for c in voiced:
+        if c.audio_offset > 0:
+            cmd += ["-ss", f"{c.audio_offset:.3f}"]
         cmd += ["-i", str(c.path)]
     cmd += ["-filter_complex_script", str(graph_file),
             "-map", "[aout]", "-c:a", "aac", "-b:a", "128k", "-ar", "48000",

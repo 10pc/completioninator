@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -40,6 +42,10 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--beatmapset-id", type=int, default=None,
                    help="Skip mirror lookup; use this beatmapset for every job (acceptance testing)")
 
+    en = sub.add_parser("ensure", help="Ensure beatmaps for pending replays (grid path; no rendering)")
+    en.add_argument("--limit", type=int, default=None, help="Max jobs this run (default: config)")
+    en.add_argument("--db", default=None, help="Override database path")
+
     q = sub.add_parser("requeue", help="Return failed jobs to pending for retry")
     q.add_argument("--db", default=None, help="Override database path")
 
@@ -52,6 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("compose", help="Compose uncomposited renders into a shrinking-grid video")
     c.add_argument("--max-clips", type=int, default=None, help="Keep longest N clips (default: config)")
+    c.add_argument("--grid", action="store_true", help="Grid backend: danser-grid spans from ready rows")
     c.add_argument("--db", default=None, help="Override database path")
 
     dl = sub.add_parser("daily", help="Nightly close-out: discover, render, compose, upload")
@@ -59,6 +66,8 @@ def _build_parser() -> argparse.ArgumentParser:
     dl.add_argument("--workers", type=int, default=None, help="Parallel workers (default: config)")
     dl.add_argument("--max-clips", type=int, default=None, help="Keep longest N clips (default: config)")
     dl.add_argument("--upload", action="store_true", help="Publish backlog to configured platforms")
+    dl.add_argument("--grid", action="store_true",
+                    help="Grid backend: ensure instead of render, compose-grid instead of compose")
     dl.add_argument("--scan-root", default=None, help="Override replay directory")
     dl.add_argument("--db", default=None, help="Override database path")
 
@@ -122,6 +131,7 @@ def _cmd_status(args, cfg) -> int:
         print(f"  pending:      {counts.get('pending', 0)}")
         print(f"  rendering:    {counts.get('rendering', 0)}")
         print(f"  rendered:     {counts.get('rendered', 0)}")
+        print(f"  ready:        {counts.get('ready', 0)}")
         print(f"  failed:       {counts.get('failed', 0)}")
         print(f"  unrenderable: {counts.get('unrenderable', 0)}")
         print(f"  excluded:     {counts.get('excluded', 0)}")
@@ -315,6 +325,59 @@ def _cmd_render(args, cfg) -> int:
     return rc
 
 
+def _cmd_ensure(args, cfg) -> int:
+    """Grid path: ensure beatmaps for pending rows (downloads only, no render).
+
+    Marks rows ready for grid compose; mirror blips requeue, dead maps fail
+    or park unrenderable through the shared ensure helper.
+    """
+    db_path = Path(args.db) if args.db else cfg.database_path
+    limit = args.limit if args.limit is not None else cfg.render_limit_default
+    cfg = _with_db(cfg, db_path)
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    stats = _fresh_stats()
+    made = 0
+    stop_event = threading.Event()
+    try:
+        while made < limit:
+            if stop_event.is_set():
+                print("beatmap services down; stopping ensure early "
+                      "(unclaimed jobs untouched)")
+                break
+            job = database.claim_pending(conn)
+            if job is None:
+                break
+            jid, tag = job["id"], f"job-{job['id']}"
+            if job["attempts"] > cfg.render_max_attempts:
+                database.mark_failed(
+                    conn, jid, f"gave up after {job['attempts']} attempts: {job.get('error')}")
+                stats["failed"] += 1
+                print(f"[{tag}] gave up (attempts exceeded)")
+                continue
+            src = cfg.replays_dir / job["path"]
+            if not src.exists():
+                database.requeue_one(conn, jid, f"transient: source missing: {src}")
+                stats["retried"] += 1
+                print(f"[{tag}] source missing, requeued: {job['path']}")
+                continue
+            bhash = job.get("beatmap_hash") or read_beatmap_hash(src)
+            if bhash and not job.get("beatmap_hash"):
+                database.set_beatmap(conn, jid, bhash, job.get("beatmapset_id"))
+            set_id = _ensure_job_beatmap(conn, cfg, job, jid, tag, bhash, None,
+                                         stats, None, stop_event)
+            if set_id is None:
+                continue
+            database.mark_ready(conn, jid)
+            made += 1
+            print(f"[{tag}] ready (set {set_id})")
+    finally:
+        conn.close()
+    print(f"ready={made} failed={stats['failed']} "
+          f"unrenderable={stats['unrenderable']} retried={stats['retried']}")
+    return 0
+
+
 def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result) -> tuple[str, bool]:
     """Turn danser log patterns into (actionable error, unrenderable?).
 
@@ -345,6 +408,52 @@ def _diagnose_render_failure(cfg, bhash: str | None, set_id: int | None, result)
                              f"from current set version (map likely updated since play)"), True)
         return f"danser: beatmap not found for set {set_id} (dancer DB mismatch; retry may help)", False
     return result.error or "render failed", False
+
+
+def _ensure_job_beatmap(conn, cfg, job, jid: int, tag: str, bhash: str | None,
+                        override_set_id: int | None, stats: dict,
+                        ensure_lock: threading.Lock | None = None,
+                        stop_event: threading.Event | None = None) -> int | None:
+    """Shared ensure phase: resolve + download the beatmap, record outcome.
+
+    Returns set_id, or None when the job was requeued/failed (stats updated
+    and a line printed — caller returns). Used by both render workers and
+    the grid ensure command.
+    """
+    set_id = job.get("beatmapset_id")
+    # Serialized across workers: concurrent downloads of one set corrupt the
+    # .part file, and concurrent danser runs contend on its internal DB.
+    # Renders (the minutes-long part) stay parallel; only this ensure phase
+    # (seconds) is serialized.
+    with ensure_lock if ensure_lock is not None else contextlib.nullcontext():
+        try:
+            set_id, _osz = beatmaps.ensure_beatmap(
+                cfg.beatmap_mirror, bhash, cfg.songs_dir, override_set_id=override_set_id,
+                osu_client_id=cfg.osu_client_id, osu_client_secret=cfg.osu_client_secret,
+                backend=cfg.beatmap_backend,
+                fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
+                fallback2_mirror=cfg.fallback2_mirror, fallback2_backend=cfg.fallback2_backend,
+                cache_dir=cfg.beatmaps_cache,
+            )
+            database.set_beatmap(conn, jid, bhash, set_id)
+        except beatmaps.BeatmapError as exc:
+            if exc.transient:
+                # Mirror blip (503/pressure/timeout): back to pending, attempts cap bounds it.
+                database.requeue_one(conn, jid, f"transient: {exc}")
+                stats["retried"] += 1
+                print(f"[{tag}] transient beatmap failure, requeued: {exc}")
+                if exc.service_down and stop_event is not None:
+                    # Every backend is down: stop claiming so the outage
+                    # pauses the queue instead of burning all attempts.
+                    print(f"[{tag}] beatmap services down; stopping run early "
+                           f"(unclaimed jobs untouched)")
+                    stop_event.set()
+                return None
+            database.mark_failed(conn, jid, str(exc))
+            stats["failed"] += 1
+            print(f"[{tag}] beatmap unavailable: {exc}")
+            return None
+    return set_id
 
 
 def _render_one(conn, cfg, renderers: dict, job: dict, override_set_id,
@@ -381,39 +490,10 @@ def _render_one(conn, cfg, renderers: dict, job: dict, override_set_id,
     if bhash and not job.get("beatmap_hash"):
         database.set_beatmap(conn, jid, bhash, job.get("beatmapset_id"))
 
-    set_id = job.get("beatmapset_id")
-    # Serialized across workers: concurrent downloads of one set corrupt the
-    # .part file, and concurrent danser runs contend on its internal DB.
-    # Renders (the minutes-long part) stay parallel; only this ensure phase
-    # (seconds) is serialized.
-    with ensure_lock if ensure_lock is not None else contextlib.nullcontext():
-        try:
-            set_id, _osz = beatmaps.ensure_beatmap(
-                cfg.beatmap_mirror, bhash, cfg.songs_dir, override_set_id=override_set_id,
-                osu_client_id=cfg.osu_client_id, osu_client_secret=cfg.osu_client_secret,
-                backend=cfg.beatmap_backend,
-                fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
-                fallback2_mirror=cfg.fallback2_mirror, fallback2_backend=cfg.fallback2_backend,
-                cache_dir=cfg.beatmaps_cache,
-            )
-            database.set_beatmap(conn, jid, bhash, set_id)
-        except beatmaps.BeatmapError as exc:
-            if exc.transient:
-                # Mirror blip (503/pressure/timeout): back to pending, attempts cap bounds it.
-                database.requeue_one(conn, jid, f"transient: {exc}")
-                stats["retried"] += 1
-                print(f"[{tag}] transient beatmap failure, requeued: {exc}")
-                if exc.service_down and stop_event is not None:
-                    # Every backend is down: stop claiming so the outage
-                    # pauses the queue instead of burning all attempts.
-                    print(f"[{tag}] beatmap services down; stopping run early "
-                           f"(unclaimed jobs untouched)")
-                    stop_event.set()
-                return
-            database.mark_failed(conn, jid, str(exc))
-            stats["failed"] += 1
-            print(f"[{tag}] beatmap unavailable: {exc}")
-            return
+    set_id = _ensure_job_beatmap(conn, cfg, job, jid, tag, bhash, override_set_id,
+                                 stats, ensure_lock, stop_event)
+    if set_id is None:
+        return
 
     # Render tier from estimated replay length: shorts record at 480p in the
     # same wall time (measured), shrinking the compose graphs that OOM. Any
@@ -815,6 +895,321 @@ def _cmd_compose(args, cfg) -> int:
     return 0
 
 
+class GridError(Exception):
+    """Grid backend failure (binary, probe, or span encode)."""
+
+
+def run_danser_grid(cfg, spec_path: Path, timeout: int) -> None:
+    """One danser-grid record run for a whole batch. Raises GridError on failure."""
+    import shutil as _shutil
+
+    binary = _shutil.which(cfg.grid_binary) or cfg.grid_binary
+    if not Path(binary).exists():
+        raise GridError(f"danser-grid binary missing: {cfg.grid_binary}")
+    cmd = [binary, "-grid", os.fspath(spec_path), "-record",
+           "-settings", cfg.danser_settings]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise GridError(f"danser-grid timed out after {timeout}s") from exc
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-15:])
+        raise GridError(f"danser-grid exit {proc.returncode}:\n{tail}")
+
+
+def run_danser_grid_probe(cfg, spec_path: Path, out_path: Path) -> None:
+    """One danser-grid --probe run writing tile durations JSON. Raises GridError."""
+    import shutil as _shutil
+
+    binary = _shutil.which(cfg.grid_binary) or cfg.grid_binary
+    if not Path(binary).exists():
+        raise GridError(f"danser-grid binary missing: {cfg.grid_binary}")
+    cmd = [binary, "-grid", os.fspath(spec_path), "-record",
+           "-settings", cfg.danser_settings,
+           "-probe-out", os.fspath(out_path)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=cfg.grid_timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        raise GridError(f"danser-grid probe timed out after {cfg.grid_timeout_seconds}s") from exc
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-15:])
+        raise GridError(f"danser-grid probe exit {proc.returncode}:\n{tail}")
+    if not out_path.exists():
+        raise GridError("danser-grid probe produced no output")
+
+
+def _fallback_legacy_compose(args, cfg, ids: list) -> int:
+    """Grid failed: send the batch back through legacy render+compose once."""
+    print("grid failed; falling back to legacy render+compose", file=sys.stderr)
+    db_path = Path(args.db) if args.db else cfg.database_path
+    conn = database.connect(db_path)
+    try:
+        for jid in ids:
+            conn.execute(
+                "UPDATE replays SET status = 'pending', attempts = 0, error = ? WHERE id = ?",
+                ("grid fallback: back to pending", jid))
+        conn.commit()
+    finally:
+        conn.close()
+    rc, _ = run_render(cfg, max(len(ids), 1), workers=cfg.render_workers)
+    if rc != 0 and rc != 130:
+        return rc
+    return _cmd_compose(args, cfg)
+
+
+def _cmd_compose_grid(args, cfg) -> int:
+    """Grid path: ready rows -> probe -> plan -> danser-grid spans -> video.
+
+    No per-clip renders: durations come from danser-grid --probe (exact
+    MapEnd), audio from map mp3s, tiles from .osr files. Morphs always
+    dissolve in grid mode (no clip mp4s exist to glide). Any grid failure
+    falls back to one legacy render+compose pass for the batch.
+    """
+    try:
+        ffmpeg, ffprobe = compositor.check_binaries()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    db_path = Path(args.db) if args.db else cfg.database_path
+    max_clips = args.max_clips or cfg.max_clips
+    today = datetime.now(timezone.utc).date().isoformat()
+    cfg.daily_dir.mkdir(parents=True, exist_ok=True)
+    workdir = cfg.working_dir / f"compose-{today}"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    database.init_db(db_path)
+    conn = database.connect(db_path)
+    try:
+        pending = database.get_counts(conn)["pending"]
+        if pending:
+            print(f"warning: {pending} replay(s) not yet ensured; composing without them")
+        rows = database.get_ready(conn)
+    finally:
+        conn.close()
+    if not rows:
+        print("nothing to compose: no ensured (ready) rows")
+        return 0
+
+    # Re-ensure (cheap cache check; Songs copies get eaten) + resolve audio.
+    conn = database.connect(db_path)
+    audio_of: dict = {}
+    ok_rows = []
+    try:
+        for row in rows:
+            src = cfg.replays_dir / row["path"]
+            if not src.exists():
+                database.requeue_one(conn, row["id"], f"transient: source missing: {src}")
+                print(f"[job-{row['id']}] source missing, requeued: {row['path']}")
+                continue
+            stats = _fresh_stats()
+            set_id = _ensure_job_beatmap(
+                conn, cfg, row, row["id"], f"job-{row['id']}",
+                row["beatmap_hash"], row["beatmapset_id"], stats, None, None)
+            if set_id is None:
+                continue
+            mp3, offset = beatmaps.find_audio_for_hash(
+                cfg.songs_dir, set_id, row["beatmap_hash"])
+            audio_of[row["id"]] = (mp3, offset)
+            if mp3 is None:
+                print(f"[job-{row['id']}] no mp3; video only")
+            ok_rows.append(row)
+    finally:
+        conn.close()
+    if not ok_rows:
+        print("nothing composable: all candidates failed ensure")
+        return 1
+
+    # Probe exact durations via danser-grid (MapEnd == legacy record length).
+    probe_tiles = [{"replay": str(cfg.replays_dir / r["path"]), "x": 0, "y": 0,
+                    "w": 64, "h": 64} for r in ok_rows]
+    probe_spec = {"width": cfg.video_width, "height": cfg.video_height,
+                  "fps": cfg.video_fps, "outDir": str(workdir / "grid"),
+                  "spans": [{"name": "probe", "start": 0.0, "end": 1.0,
+                             "tiles": probe_tiles}]}
+    probe_path = workdir / "grid-probe.json"
+    probe_path.write_text(json.dumps(probe_spec))
+    probes_path = workdir / "grid-probes.json"
+    try:
+        run_danser_grid_probe(cfg, probe_path, probes_path)
+        probe_rows = json.loads(probes_path.read_text())
+    except (GridError, ValueError, OSError) as exc:
+        print(f"grid probe FAILED ({exc}); falling back", file=sys.stderr)
+        return _fallback_legacy_compose(args, cfg, [r["id"] for r in ok_rows])
+    durations = {}
+    conn = database.connect(db_path)
+    try:
+        for pr in probe_rows:
+            if pr.get("error"):
+                r = next((x for x in ok_rows if str(cfg.replays_dir / x["path"]) == pr["replay"]), None)
+                if r is not None:
+                    database.mark_failed(conn, r["id"], f"grid probe: {pr['error']}"[-500:])
+                    print(f"[job-{r['id']}] grid probe failed, marked failed")
+                continue
+            if pr.get("duration_s", 0) > 0:
+                durations[pr["replay"]] = float(pr["duration_s"])
+    finally:
+        conn.close()
+
+    clips: list[compositor.Clip] = []
+    for row in ok_rows:
+        key = str(cfg.replays_dir / row["path"])
+        if key not in durations:
+            continue
+        mp3, offset = audio_of[row["id"]]
+        clips.append(compositor.Clip(
+            id=row["id"], path=mp3 if mp3 is not None else Path(key),
+            day=row["day"], duration=durations[key],
+            has_audio=mp3 is not None, audio_offset=offset))
+    if not clips:
+        print("nothing composable: no probed durations")
+        return 1
+
+    clips.sort(key=lambda c: c.duration, reverse=True)
+    kept, rolled = clips[:max_clips], clips[max_clips:]
+    days = sorted({c.day for c in kept if c.day})
+    span = f"{days[0]}..{days[-1]}" if len(days) > 1 else (days[0] if days else None)
+    print(f"batch: {len(kept)} clips ({sum(c.duration for c in kept):.0f}s content), "
+          f"{len(rolled)} roll forward to next batch")
+
+    comp_stats = None
+    try:
+        comp_stats = completion.fetch_completion(cfg.completion_profile_url)
+    except completion.CompletionError as exc:
+        log.warning("completion stats fetch failed: %s", exc)
+        comp_stats = completion.from_manual(
+            cfg.completion_passed, cfg.completion_left, cfg.completion_pct)
+    snapshot = None
+    if comp_stats:
+        snapshot = {"passed": comp_stats.passed, "left": comp_stats.left, "pct": comp_stats.pct}
+        print(f"completion snapshot: {comp_stats.line1} ({comp_stats.line2})")
+    else:
+        print("completion stats unavailable; skipping outro")
+
+    out_path = cfg.daily_dir / f"day-{today}.mp4"
+    suffix = 2
+    while out_path.exists():
+        out_path = cfg.daily_dir / f"day-{today}-{suffix}.mp4"
+        suffix += 1
+
+    header = compositor.header_text(today, len(kept), span, cfg.header_extra)
+    grid_h = cfg.video_height - cfg.header_height
+    timeline = compositor.plan_timeline(kept, morph_s=cfg.morph_seconds,
+                                        width=cfg.video_width, grid_h=grid_h,
+                                        header_h=cfg.header_height,
+                                        quant=cfg.segment_quant)
+    outro_dur = cfg.outro_seconds if comp_stats else 0.0
+    n_seg = sum(isinstance(s, compositor.Segment) for s in timeline)
+    n_morph = len(timeline) - n_seg
+    print(f"grid: {n_seg} static spans + {n_morph} dissolves"
+          f"{' + outro' if outro_dur else ''} -> {out_path}")
+
+    # Emit the record spec: static spans only (morphs dissolve between
+    # grid outputs, same as the oversized-morph path).
+    osr_of = {r["id"]: str(cfg.replays_dir / r["path"]) for r in ok_rows}
+    grid_spans = []
+    for i, span_item in enumerate(timeline):
+        if isinstance(span_item, compositor.MorphSpan):
+            continue
+        k = len(span_item.active)
+        cols, rows_ = compositor.grid_dims(k)
+        tw, th = compositor.tile_size(cols, rows_, cfg.video_width, grid_h)
+        rects = compositor.layout_rects(cols, rows_, k, tw, th, cfg.video_width,
+                                        grid_h, cfg.header_height)
+        grid_spans.append({
+            "name": f"seg-{i:03d}", "start": span_item.start, "end": span_item.end,
+            "tiles": [{"replay": osr_of[c.id], "x": r.x, "y": r.y, "w": r.w, "h": r.h}
+                      for c, r in zip(span_item.active, rects)],
+        })
+    grid_spec = {"width": cfg.video_width, "height": cfg.video_height,
+                 "fps": cfg.video_fps, "outDir": str(workdir / "grid"),
+                 "spans": grid_spans}
+    grid_path = workdir / "grid.json"
+    grid_path.write_text(json.dumps(grid_spec))
+
+    seg_paths: list = [None] * len(timeline)
+    video_tmp = workdir / "video.mp4"
+    audio_tmp = workdir / "audio.m4a"
+    content_len = max(c.duration for c in kept)
+    total_len = content_len + outro_dur
+    try:
+        run_danser_grid(cfg, grid_path, cfg.grid_timeout_seconds)
+        for i, span_item in enumerate(timeline):
+            if isinstance(span_item, compositor.MorphSpan):
+                continue
+            seg_paths[i] = workdir / "grid" / f"seg-{i:03d}.mp4"
+            if not seg_paths[i].exists():
+                raise GridError(f"danser-grid missing output for seg-{i:03d}")
+        # Morphs always dissolve in grid mode (no clip mp4s exist to glide).
+        for i, span_item in enumerate(timeline):
+            if not isinstance(span_item, compositor.MorphSpan):
+                continue
+            seg_path = workdir / f"seg-{i:03d}.mp4"
+            neighbors = _dissolve_neighbors(timeline, i)
+            if neighbors is None:
+                raise GridError(f"morph at index {i} has no neighboring static span")
+            prev, nxt = neighbors
+            a_idx = prev if prev is not None else nxt
+            b_idx = nxt if nxt is not None else prev
+            still_a = workdir / f"seg-{i:03d}-a.png"
+            still_b = workdir / f"seg-{i:03d}-b.png"
+            compositor.encode_seg_still(ffmpeg, seg_paths[a_idx], still_a,
+                                        last=prev is not None)
+            compositor.encode_seg_still(ffmpeg, seg_paths[b_idx], still_b,
+                                        last=False)
+            compositor.encode_dissolve(ffmpeg, still_a, still_b, span_item.length,
+                                       cfg.video_fps, seg_path,
+                                       cfg.video_preset, cfg.video_crf)
+            seg_paths[i] = seg_path
+        if outro_dur:
+            outro_path = workdir / "seg-outro.mp4"
+            outro_graph = workdir / f"seg-outro.txt"
+            outro_graph.write_text(compositor.build_outro_graph(
+                cfg.video_width, cfg.video_height, outro_dur,
+                comp_stats.line1, comp_stats.line2,
+                cfg.fontfile, cfg.outro_fontsize, cfg.outro_fontsize_sub))
+            compositor.encode_outro(ffmpeg, outro_graph, outro_path,
+                                    cfg.video_preset, cfg.video_crf, 600)
+            seg_paths.append(outro_path)
+        compositor.concat_segments(ffmpeg, seg_paths, video_tmp, workdir)
+        audio_script, has_audio = compositor.build_audio_graph(
+            kept, content_len, total_len, max_tracks=cfg.audio_max_tracks)
+        if has_audio:
+            (workdir / "audio.txt").write_text(audio_script)
+            compositor.encode_audio_mix(ffmpeg, kept, workdir / "audio.txt", audio_tmp,
+                                        min(max(300, int(total_len)), cfg.compose_timeout),
+                                        max_tracks=cfg.audio_max_tracks)
+            compositor.mux_audio_video(ffmpeg, video_tmp, audio_tmp, out_path)
+        else:
+            compositor.mux_audio_video(ffmpeg, video_tmp, None, out_path)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, GridError) as exc:
+        print(f"grid compose FAILED ({exc}); falling back", file=sys.stderr)
+        return _fallback_legacy_compose(args, cfg, [c.id for c in kept])
+    except Exception as exc:  # noqa: BLE001 - never strand rows as ready on surprise
+        print(f"grid compose FAILED ({exc}); falling back", file=sys.stderr)
+        return _fallback_legacy_compose(args, cfg, [c.id for c in kept])
+
+    final = compositor.probe_clip(ffprobe, out_path)
+    total = sum(c.duration for c in kept)
+    print(f"composed {out_path} ({final.duration:.0f}s)" if final else f"composed {out_path}")
+    for p in seg_paths:
+        p.unlink(missing_ok=True)
+    for p in workdir.glob("seg-*.txt"):
+        p.unlink(missing_ok=True)
+    (workdir / "concat.txt").unlink(missing_ok=True)
+    (workdir / "audio.txt").unlink(missing_ok=True)
+    (workdir / "seg-outro.txt").unlink(missing_ok=True)
+    video_tmp.unlink(missing_ok=True)
+    audio_tmp.unlink(missing_ok=True)
+    conn = database.connect(db_path)
+    try:
+        database.mark_composited(conn, [c.id for c in kept], today)
+        database.record_daily(conn, today, out_path.as_posix(), len(kept),
+                              final.duration if final else total, span, snapshot)
+    finally:
+        conn.close()
+    return 0
+
+
 def _cmd_daily(args, cfg) -> int:
     """Nightly close-out: discover -> render -> compose-if-new-renders."""
     cfg = _with_db(cfg, Path(args.db) if args.db else cfg.database_path)
@@ -826,6 +1221,9 @@ def _cmd_daily(args, cfg) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     print(f"discover: found={scan['found']} new={scan['new']}")
+
+    if getattr(args, "grid", False):
+        return _cmd_daily_grid(args, cfg, scan)
 
     rc, rstats = run_render(cfg, args.limit if args.limit is not None else cfg.render_limit_default,
                             workers=args.workers if args.workers is not None else cfg.render_workers)
@@ -848,6 +1246,57 @@ def _cmd_daily(args, cfg) -> int:
         conn.close()
     if rstats["rendered"] > 0 or leftover > 0:
         crc = _cmd_compose(argparse.Namespace(db=str(cfg.database_path), max_clips=args.max_clips), cfg)
+        composed = "ok" if crc == 0 else "failed"
+        print(summary + f" composed={composed}")
+        if crc != 0:
+            return crc
+    else:
+        print(summary + f" composed={composed}")
+
+    if not args.upload:
+        return 0
+    # Publish backlog: latest daily per platform missing a success row.
+    results = {}
+    conn = database.connect(cfg.database_path)
+    try:
+        for platform in ("youtube", "instagram"):
+            if platform == "youtube" and not (
+                    cfg.youtube_client_id and cfg.youtube_client_secret):
+                results[platform] = "unconfigured"
+                continue
+            if platform == "instagram" and not (
+                    cfg.instagram_user_id and cfg.instagram_token):
+                results[platform] = "unconfigured"
+                continue
+            day = database.pending_upload_day(conn, platform)
+            if day is None:
+                results[platform] = "nothing"
+                continue
+            ns = argparse.Namespace(db=str(cfg.database_path), day=day,
+                                    platform=platform, force=False)
+            results[platform] = "ok" if _cmd_upload(ns, cfg) == 0 else "failed"
+    finally:
+        conn.close()
+    print(summary + f" composed={composed} uploaded=" +
+          ",".join(f"{p}:{s}" for p, s in results.items()))
+    return 0 if all(s != "failed" for s in results.values()) else 1
+
+
+def _cmd_daily_grid(args, cfg, scan) -> int:
+    """Grid nightly: discover -> ensure -> compose-grid -> upload backlog."""
+    erc = _cmd_ensure(argparse.Namespace(db=str(cfg.database_path), limit=args.limit), cfg)
+    summary = f"daily: discovered new={scan['new']} ensure_rc={erc}"
+    if erc != 0:
+        return erc
+    composed = "skipped"
+    conn = database.connect(cfg.database_path)
+    try:
+        leftover = len(database.get_ready(conn))
+    finally:
+        conn.close()
+    if leftover > 0:
+        crc = _cmd_compose_grid(
+            argparse.Namespace(db=str(cfg.database_path), max_clips=args.max_clips), cfg)
         composed = "ok" if crc == 0 else "failed"
         print(summary + f" composed={composed}")
         if crc != 0:
@@ -1197,6 +1646,8 @@ def main(argv: list | None = None) -> int:
         return _cmd_status(args, cfg)
     if args.command == "render":
         return _cmd_render(args, cfg)
+    if args.command == "ensure":
+        return _cmd_ensure(args, cfg)
     if args.command == "requeue":
         return _cmd_requeue(args, cfg)
     if args.command == "stop":
@@ -1204,6 +1655,8 @@ def main(argv: list | None = None) -> int:
     if args.command == "progress":
         return _cmd_progress(args, cfg)
     if args.command == "compose":
+        if getattr(args, "grid", False):
+            return _cmd_compose_grid(args, cfg)
         return _cmd_compose(args, cfg)
     if args.command == "daily":
         return _cmd_daily(args, cfg)

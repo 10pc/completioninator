@@ -177,6 +177,49 @@ def find_osu_for_hash(songs_dir: Path, beatmapset_id: int,
     return None
 
 
+def find_audio_for_hash(songs_dir: Path, beatmapset_id: int,
+                        beatmap_hash: str) -> tuple[Path | None, float]:
+    """(mp3 path, offset_s) for the difficulty matching the replay hash.
+
+    The mp3 starts at song zero while gameplay content starts at the drain,
+    so offset skips ahead to just before the first hitobject (mirroring how
+    -skip records align clip audio). Returns (None, 0.0) when unresolvable.
+    """
+    osu_file = find_osu_for_hash(songs_dir, beatmapset_id, beatmap_hash)
+    if osu_file is None:
+        return None, 0.0
+    try:
+        text = osu_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, 0.0
+    audio_name: str | None = None
+    first_ms: int | None = None
+    section = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            section = s
+            continue
+        if section == "[General]" and s.lower().startswith("audiofilename:"):
+            audio_name = s.split(":", 1)[1].strip()
+        elif section == "[HitObjects]" and s and not s.startswith("["):
+            parts = s.split(",")
+            if len(parts) >= 3:
+                try:
+                    t = int(parts[2])
+                except ValueError:
+                    continue
+                if first_ms is None or t < first_ms:
+                    first_ms = t
+    if not audio_name:
+        return None, 0.0
+    mp3 = osu_file.parent / audio_name
+    if not mp3.exists():
+        return None, 0.0
+    offset = max(0.0, (first_ms if first_ms is not None else 2000) - 1500) / 1000.0
+    return mp3, offset
+
+
 def estimate_map_seconds(osu_path: Path) -> float | None:
     """Map length from the last hitobject end (seconds). Rough by design:
     slider tails are approximated by their start time, so callers add margin.

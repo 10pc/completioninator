@@ -74,6 +74,9 @@ class PipelineConfig:
     outro_seconds: float = 6.0
     outro_fontsize: int = 72
     outro_fontsize_sub: int = 54
+    # grid renderer (danser-grid span backend; optional until cutover)
+    grid_binary: str = "/opt/danser-grid/danser-grid"
+    grid_timeout_seconds: int = 5400
     completion_profile_url: str = "https://osucomplete.org/u/19333530/osu-ranked"
     completion_passed: str = ""
     completion_left: str = ""
@@ -239,6 +242,11 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         _gmt = os.environ.get("PIPELINE_MORPH_GLIDE_MAX_TILES")
         morph_glide_max_tiles = int(_gmt) if _gmt is not None else int(
             video.get("morph_glide_max_tiles", 120))
+        grid = data.get("grid", {})
+        grid_binary = os.environ.get("PIPELINE_GRID_BINARY") or grid.get(
+            "binary", "/opt/danser-grid/danser-grid")
+        grid_timeout_seconds = int(os.environ.get(
+            "PIPELINE_GRID_TIMEOUT", str(grid.get("timeout_seconds", 5400))))
         outro_seconds = float(video.get("outro_seconds", 6.0))
         outro_fontsize = int(video.get("outro_fontsize", 72))
         outro_fontsize_sub = int(video.get("outro_fontsize_sub", 54))
@@ -316,6 +324,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         video_preset, video_crf, compose_timeout = "veryfast", 23, 1800
         morph_seconds = float(os.environ.get("PIPELINE_MORPH_SECONDS", 1.0))
         morph_glide_max_tiles = int(os.environ.get("PIPELINE_MORPH_GLIDE_MAX_TILES", "120"))
+        grid_binary = os.environ.get("PIPELINE_GRID_BINARY", "/opt/danser-grid/danser-grid")
+        grid_timeout_seconds = int(os.environ.get("PIPELINE_GRID_TIMEOUT", "5400"))
         _sq = os.environ.get("PIPELINE_SEGMENT_QUANT")
         segment_quant = float(_sq) if _sq is not None else 0.5
         outro_seconds, outro_fontsize, outro_fontsize_sub = 6.0, 72, 54
@@ -385,6 +395,8 @@ def load_config(explicit: str | Path | None = None) -> PipelineConfig:
         morph_seconds=morph_seconds,
         segment_quant=segment_quant,
         morph_glide_max_tiles=morph_glide_max_tiles,
+        grid_binary=grid_binary,
+        grid_timeout_seconds=grid_timeout_seconds,
         outro_seconds=outro_seconds,
         outro_fontsize=outro_fontsize,
         outro_fontsize_sub=outro_fontsize_sub,

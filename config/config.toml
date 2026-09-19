@@ -98,6 +98,13 @@ completion_profile_url = "https://osucomplete.org/u/19333530/osu-ranked"
 fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 daily = "/data/daily"
 
+[grid]
+# danser-grid span backend (optional until cutover; `compose --grid`).
+# Binary baked into the image by the M3 Dockerfile stage.
+binary = "/opt/danser-grid/danser-grid"
+# One invocation renders the whole batch; size generously (content + tiles).
+timeout_seconds = 5400
+
 [youtube]
 # Secrets ONLY via env (this file is committed):
 #   PIPELINE_YOUTUBE_CLIENT_ID / PIPELINE_YOUTUBE_CLIENT_SECRET
