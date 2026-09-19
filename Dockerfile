@@ -78,6 +78,7 @@ RUN pip install --no-cache-dir -e . \
     && cp -r ./danser/settings/. /opt/danser/settings/ \
     && cp -r ./danser/skins/. /opt/danser/skins/ \
     && mkdir -p /opt/danser-grid \
+    && cp /opt/danser/assets.dpak /opt/danser-grid/assets.dpak \
     && useradd --create-home --uid 1000 app \
     && mkdir -p /data/db /data/working /data/rendered /data/daily /data/logs /data/beatmaps/songs \
     && chown -R app:app /app /data /opt/danser /opt/danser-grid
