@@ -1,12 +1,12 @@
 # Milestone 2: headless danser rendering (Xvfb + Mesa llvmpipe, CPU-only).
 # danser binary is baked in from a pinned upstream release.
 ARG DANSER_VERSION=0.11.0
-# danser-grid fork ref (branch for M3; pin a tag at cutover).
-ARG DANSER_GRID_REF=mvp/grid-spans
+# danser-grid fork ref (master carries the grid MVP; pin a tag at cutover).
+ARG DANSER_GRID_REF=master
 
 # ---- grid builder: danser-grid binary from the fork ----
 FROM golang:1.24-bookworm AS gridbuilder
-ARG DANSER_GRID_REF=mvp/grid-spans
+ARG DANSER_GRID_REF=master
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         libgl1-mesa-dev \
