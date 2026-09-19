@@ -247,8 +247,11 @@ def header_text(date: str, total: int, span: str | None = None, extra: str = "")
 def drawtext_filter(text: str, fontfile: str, fontsize: int, y: int,
                     fontcolor: str = "white") -> str:
     safe = text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace(",", "\\,")
+    # expansion=none: a bare "%" (e.g. outro "1.14%") is a drawtext error
+    # ("Stray %") that silently draws NOTHING while exiting 0. Nothing here
+    # uses %{...} expansion, so disable it everywhere.
     return (f"drawtext=fontfile='{fontfile}':text='{safe}':fontsize={fontsize}:"
-            f"fontcolor={fontcolor}:x=(w-text_w)/2:y={y}")
+            f"fontcolor={fontcolor}:x=(w-text_w)/2:y={y}:expansion=none")
 
 
 def build_placed_graph(items: list[tuple["Clip", Rect]], width: int, grid_h: int,
