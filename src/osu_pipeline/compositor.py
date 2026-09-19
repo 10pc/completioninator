@@ -524,6 +524,36 @@ def encode_dissolve(ffmpeg: str, still_a: Path, still_b: Path, duration: float,
     subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
 
 
+def build_grid_finish_graph(header: str, fontfile: str, fontsize: int,
+                            header_h: int, fade_out: float = 0.0,
+                            fade_start: float = 0.0) -> str:
+    """Header burn-in + tail fade for grid-mode content (legacy parity).
+
+    danser-grid spans are bare canvas: tiles below a blank header bar, no
+    tail fade. Same drawtext convention as build_placed_graph
+    (text vertically centered in the header bar) and same fade semantics
+    as the legacy last segment (1s fade into the outro).
+    """
+    filt = drawtext_filter(header, fontfile, fontsize, (header_h - fontsize) // 2)
+    if fade_out > 0 and fade_start > 0:
+        filt += f",fade=t=out:st={fade_start:.3f}:d={fade_out:.3f}"
+    return f"[0:v]{filt},format=yuv420p[vout]\n"
+
+
+def encode_grid_finish(ffmpeg: str, src_path: Path, graph_file: Path,
+                       out_path: Path, fps: int, preset: str, crf: int,
+                       timeout: int = 600) -> None:
+    """One finishing pass over concatenated grid content: header + tail fade."""
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(src_path),
+           "-filter_complex_script", str(graph_file),
+           "-map", "[vout]",
+           "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+           "-pix_fmt", "yuv420p", "-r", str(fps),
+           "-an", str(out_path)]
+    log.info("encoding grid finish pass (header + tail fade)")
+    subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+
+
 def concat_segments(ffmpeg: str, seg_paths: list[Path], out_path: Path,
                     workdir: Path, timeout: int = 600) -> None:
     lst = workdir / "concat.txt"

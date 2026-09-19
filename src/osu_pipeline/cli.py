@@ -1174,6 +1174,23 @@ def _cmd_compose_grid(args, cfg) -> int:
                                     cfg.video_preset, cfg.video_crf, 600)
             seg_paths.append(outro_path)
         compositor.concat_segments(ffmpeg, seg_paths, video_tmp, workdir)
+        # Legacy parity: danser-grid spans are bare canvas (blank header bar,
+        # no tail fade), so burn the header text and the 1s fade into the
+        # outro in one finishing pass over the concatenated content.
+        content_end = timeline[-1].end if timeline else content_len
+        finish_graph = workdir / "finish.txt"
+        finish_graph.write_text(compositor.build_grid_finish_graph(
+            header, cfg.fontfile, 36, cfg.header_height,
+            fade_out=1.0 if outro_dur else 0.0,
+            fade_start=content_end - 1.0 if outro_dur and content_end > 1.0 else 0.0))
+        finished_tmp = workdir / "video-finished.mp4"
+        finish_timeout = min(max(600, int(content_len * 10) + 120), cfg.compose_timeout)
+        compositor.encode_grid_finish(ffmpeg, video_tmp, finish_graph, finished_tmp,
+                                      cfg.video_fps, cfg.video_preset, cfg.video_crf,
+                                      finish_timeout)
+        video_tmp.unlink(missing_ok=True)
+        finished_tmp.rename(video_tmp)
+        (workdir / "finish.txt").unlink(missing_ok=True)
         audio_script, has_audio = compositor.build_audio_graph(
             kept, content_len, total_len, max_tracks=cfg.audio_max_tracks)
         if has_audio:

@@ -129,6 +129,7 @@ def test_run_danser_grid_success_failure_timeout(tmp_path: Path, monkeypatch):
 
     class _Cfg:
         grid_binary = "/opt/danser-grid/danser-grid"
+        danser_home = "/opt/danser"
         danser_settings = "pipeline"
         grid_timeout_seconds = 60
 
@@ -138,6 +139,7 @@ def test_run_danser_grid_success_failure_timeout(tmp_path: Path, monkeypatch):
 
     def _ok(cmd, **kwargs):
         seen["cmd"] = cmd
+        seen["cwd"] = kwargs.get("cwd")
         return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
 
     def _fail(cmd, **kwargs):
@@ -150,6 +152,7 @@ def test_run_danser_grid_success_failure_timeout(tmp_path: Path, monkeypatch):
     cli_mod.run_danser_grid(_Cfg(), tmp_path / "s.json", 60)  # no raise
     assert seen["cmd"][:2] == ["/opt/danser-grid/danser-grid", "-grid"]
     assert "-settings" in seen["cmd"] and "pipeline" in seen["cmd"]
+    assert seen["cwd"] == "/opt/danser"
 
     monkeypatch.setattr(cli_mod.subprocess, "run", _fail)
     with pytest.raises(cli_mod.GridError, match="exit 3"):
@@ -230,6 +233,9 @@ def test_compose_grid_happy_path(tmp_path: Path, monkeypatch, capsys):
     def _concat(ffmpeg, segs, out_path, workdir, timeout=600):
         Path(out_path).write_bytes(b"joined")
 
+    def _finish(ffmpeg, src, graph, out_path, fps, preset, crf, timeout=600):
+        Path(out_path).write_bytes(b"finished")
+
     def _mix(ffmpeg, clips, graph, out_path, timeout, max_tracks=10):
         Path(out_path).write_bytes(b"mix")
 
@@ -240,6 +246,7 @@ def test_compose_grid_happy_path(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setattr(comp_mod, "encode_dissolve", _dissolve)
     monkeypatch.setattr(comp_mod, "encode_outro", _outro)
     monkeypatch.setattr(comp_mod, "concat_segments", _concat)
+    monkeypatch.setattr(comp_mod, "encode_grid_finish", _finish)
     monkeypatch.setattr(comp_mod, "encode_audio_mix", _mix)
     monkeypatch.setattr(comp_mod, "mux_audio_video", _mux)
     # final verification probe
@@ -343,3 +350,16 @@ def test_daily_grid_routing(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cli_mod, "_cmd_compose_grid", _compose)
     assert main(["--config", str(cfg), "daily", "--grid"]) == 0
     assert seen == {"ensure": True, "compose": True}
+
+
+def test_grid_finish_graph_header_and_fade():
+    g = compositor.build_grid_finish_graph("19-09-2026 | 2 maps", "font.ttf", 36, 80)
+    assert "drawtext" in g and "19-09-2026" in g and "fade=t=out" not in g
+    assert g.strip().endswith("[vout]")
+    g2 = compositor.build_grid_finish_graph("h", "font.ttf", 36, 80,
+                                            fade_out=1.0, fade_start=59.0)
+    assert "fade=t=out:st=59.000:d=1.000" in g2
+    # no fade without a valid start (mirrors legacy guard)
+    g3 = compositor.build_grid_finish_graph("h", "font.ttf", 36, 80,
+                                            fade_out=1.0, fade_start=0.0)
+    assert "fade=t=out" not in g3
