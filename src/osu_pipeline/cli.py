@@ -907,7 +907,7 @@ def run_danser_grid(cfg, spec_path: Path, timeout: int) -> None:
     if not Path(binary).exists():
         raise GridError(f"danser-grid binary missing: {cfg.grid_binary}")
     cmd = [binary, "-grid", os.fspath(spec_path), "-record",
-           "-settings", cfg.danser_settings]
+           "-settings", cfg.danser_settings, "-noupdatecheck"]
     try:
         proc = subprocess.run(cmd, cwd=cfg.danser_home,
                               capture_output=True, text=True, timeout=timeout)
@@ -926,7 +926,7 @@ def run_danser_grid_probe(cfg, spec_path: Path, out_path: Path) -> None:
     if not Path(binary).exists():
         raise GridError(f"danser-grid binary missing: {cfg.grid_binary}")
     cmd = [binary, "-grid", os.fspath(spec_path), "-record",
-           "-settings", cfg.danser_settings,
+           "-settings", cfg.danser_settings, "-noupdatecheck",
            "-probe-out", os.fspath(out_path)]
     try:
         proc = subprocess.run(cmd, cwd=cfg.danser_home,
