@@ -463,7 +463,9 @@ def encode_audio_mix(ffmpeg: str, clips: list[Clip], graph_file: Path,
     cmd += ["-filter_complex_script", str(graph_file),
             "-map", "[aout]", "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
             str(out_path)]
-    log.info("encoding full-timeline audio mix (%d tracks)", len(voiced))
+    log.info("encoding full-timeline audio mix (%d tracks): %s",
+             len(voiced),
+             [(round(c.audio_rate, 3), round(c.audio_delay, 3)) for c in voiced])
     subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
 
 
