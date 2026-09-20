@@ -1012,7 +1012,13 @@ def _cmd_compose_grid(args, cfg) -> int:
                 continue
             mp3, offset = beatmaps.find_audio_for_hash(
                 cfg.songs_dir, set_id, row["beatmap_hash"])
-            audio_of[row["id"]] = (mp3, offset)
+            try:
+                from osrparse import Replay as _Replay
+
+                rate = compositor.rate_for_mods(_Replay.from_path(src).mods)
+            except Exception:  # noqa: BLE001 - unparseable replay: mix at 1x
+                rate = 1.0
+            audio_of[row["id"]] = (mp3, offset, rate)
             if mp3 is None:
                 print(f"[job-{row['id']}] no mp3; video only")
             ok_rows.append(row)
@@ -1058,11 +1064,11 @@ def _cmd_compose_grid(args, cfg) -> int:
         key = str(cfg.replays_dir / row["path"])
         if key not in durations:
             continue
-        mp3, offset = audio_of[row["id"]]
+        mp3, offset, rate = audio_of[row["id"]]
         clips.append(compositor.Clip(
             id=row["id"], path=mp3 if mp3 is not None else Path(key),
             day=row["day"], duration=durations[key],
-            has_audio=mp3 is not None, audio_offset=offset))
+            has_audio=mp3 is not None, audio_offset=offset, audio_rate=rate))
     if not clips:
         print("nothing composable: no probed durations")
         return 1

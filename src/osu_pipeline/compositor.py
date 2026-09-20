@@ -34,6 +34,35 @@ class Clip:
     # mp3-source mixes: skip song intro so mix content aligns with gameplay
     # the way -skip records do (0 = from the start, e.g. clip mp4 inputs).
     audio_offset: float = 0.0
+    # Playback rate of the gameplay (DT/NC 1.5, HT/DC 0.75): the mix applies
+    # atempo so stacked mp3s run at the same rate danser plays them. Clip
+    # mp4 inputs already carry rate-correct audio, so they stay 1.0.
+    audio_rate: float = 1.0
+
+
+def rate_for_mods(mods: int) -> float:
+    """Gameplay rate for an osu! mod bitmask (DT/NC 1.5x, HT 0.75x)."""
+    if mods & (64 | 512):  # DoubleTime | Nightcore
+        return 1.5
+    if mods & 256:  # HalfTime
+        return 0.75
+    return 1.0
+
+
+def atempo_chain(rate: float) -> str:
+    """atempo filter(s) for a rate (single filter covers 0.5-2.0)."""
+    if rate == 1.0:
+        return ""
+    parts = []
+    r = rate
+    while r > 2.0:
+        parts.append("atempo=2.0")
+        r /= 2.0
+    while r < 0.5:
+        parts.append("atempo=0.5")
+        r *= 2.0
+    parts.append(f"atempo={r:.4g}")
+    return ",".join(parts) + ","
 
 
 @dataclass
@@ -397,8 +426,9 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
     if not voiced:
         return "", False
     chains = []
-    for i in range(len(voiced)):
-        chains.append(f"[{i}:a]aresample=48000,asetpts=PTS-STARTPTS[a{i}]")
+    for i, c in enumerate(voiced):
+        tempo = atempo_chain(c.audio_rate)
+        chains.append(f"[{i}:a]{tempo}aresample=48000,asetpts=PTS-STARTPTS[a{i}]")
     if len(voiced) == 1:
         chains.append("[a0]anull[amix]")
     else:

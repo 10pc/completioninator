@@ -257,6 +257,28 @@ def test_audio_graph_single_and_none():
     assert compositor.build_audio_graph(mute, 20.0, 26.0) == ("", False)
 
 
+def test_rate_for_mods():
+    assert compositor.rate_for_mods(0) == 1.0
+    assert compositor.rate_for_mods(2) == 1.0  # Easy
+    assert compositor.rate_for_mods(64) == 1.5  # DT
+    assert compositor.rate_for_mods(66) == 1.5  # EZ+DT
+    assert compositor.rate_for_mods(512) == 1.5  # NC
+    assert compositor.rate_for_mods(256) == 0.75  # HT
+
+
+def test_audio_graph_applies_tempo_per_track():
+    plain = [_clip(1, 100.0)]
+    script, _ = compositor.build_audio_graph(plain, 100.0, 106.0)
+    assert "atempo" not in script
+    fast = [_clip(1, 100.0), _clip(2, 60.0)]
+    fast[0].audio_rate = 1.5
+    script, _ = compositor.build_audio_graph(fast, 100.0, 106.0)
+    assert "[0:a]atempo=1.5,aresample=48000" in script
+    assert "[1:a]aresample=48000" in script  # 1x track untouched
+    assert compositor.atempo_chain(1.0) == ""
+    assert compositor.atempo_chain(0.75) == "atempo=0.75,"
+
+
 def test_audio_mix_uses_longest_n_tracks():
     clips = [_clip(i, float(10 + i)) for i in range(12)]  # 10s..21s
     picked = compositor.select_mix_clips(clips, 10)
