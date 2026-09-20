@@ -38,6 +38,10 @@ class Clip:
     # atempo so stacked mp3s run at the same rate danser plays them. Clip
     # mp4 inputs already carry rate-correct audio, so they stay 1.0.
     audio_rate: float = 1.0
+    # Seconds of silence before this track starts: grid tiles begin in
+    # lead-in (negative map clock), so song zero meets map zero, not the
+    # video start. Applied AFTER atempo (delay counts in output time).
+    audio_delay: float = 0.0
 
 
 def rate_for_mods(mods: int) -> float:
@@ -428,7 +432,11 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
     chains = []
     for i, c in enumerate(voiced):
         tempo = atempo_chain(c.audio_rate)
-        chains.append(f"[{i}:a]{tempo}aresample=48000,asetpts=PTS-STARTPTS[a{i}]")
+        # adelay goes AFTER asetpts (which would reset its shift to zero).
+        delay = ""
+        if c.audio_delay > 0:
+            delay = f",adelay={int(round(c.audio_delay * 1000))}|all=1"
+        chains.append(f"[{i}:a]{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}[a{i}]")
     if len(voiced) == 1:
         chains.append("[a0]anull[amix]")
     else:

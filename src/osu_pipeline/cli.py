@@ -1045,6 +1045,7 @@ def _cmd_compose_grid(args, cfg) -> int:
         print(f"grid probe FAILED ({exc}); falling back", file=sys.stderr)
         return _fallback_legacy_compose(args, cfg, [r["id"] for r in ok_rows])
     durations = {}
+    start_offsets = {}
     conn = database.connect(db_path)
     try:
         for pr in probe_rows:
@@ -1056,6 +1057,7 @@ def _cmd_compose_grid(args, cfg) -> int:
                 continue
             if pr.get("duration_s", 0) > 0:
                 durations[pr["replay"]] = float(pr["duration_s"])
+                start_offsets[pr["replay"]] = float(pr.get("start_offset_ms", 0.0))
     finally:
         conn.close()
 
@@ -1064,11 +1066,16 @@ def _cmd_compose_grid(args, cfg) -> int:
         key = str(cfg.replays_dir / row["path"])
         if key not in durations:
             continue
-        mp3, offset, rate = audio_of[row["id"]]
+        mp3, _offset, rate = audio_of[row["id"]]
+        # Grid tiles start in lead-in (negative map clock): delay the mp3 so
+        # song zero meets map zero. The old -ss seek assumed -skip trimming
+        # the video too, which grid never does (hence the constant offset).
+        delay = max(0.0, -start_offsets.get(key, 0.0) / 1000.0 / (rate or 1.0))
         clips.append(compositor.Clip(
             id=row["id"], path=mp3 if mp3 is not None else Path(key),
             day=row["day"], duration=durations[key],
-            has_audio=mp3 is not None, audio_offset=offset, audio_rate=rate))
+            has_audio=mp3 is not None, audio_offset=0.0,
+            audio_rate=rate, audio_delay=delay))
     if not clips:
         print("nothing composable: no probed durations")
         return 1
