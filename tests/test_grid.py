@@ -167,6 +167,103 @@ def test_run_danser_grid_success_failure_timeout(tmp_path: Path, monkeypatch):
         cli_mod.run_danser_grid(_Cfg(), tmp_path / "s.json", 60)
 
 
+def test_compose_grid_live_morphs(tmp_path: Path, monkeypatch, capsys):
+    """Morphs render live in danser-grid: spec carries from/to rects, and no
+    dissolve pass runs (dissolves freeze time and desync the mix)."""
+    root = tmp_path / "replays"
+    root.mkdir()
+    (root / "a.osr").write_bytes(b"fake")
+    (root / "b.osr").write_bytes(b"fake")
+    db = tmp_path / "p.sqlite"
+    _seed_pending(db, ("a.osr", "b.osr"))
+    cfg = _cfg(tmp_path)
+    conn = database.connect(db)
+    try:
+        for row in conn.execute("SELECT id FROM replays"):
+            database.mark_ready(conn, row["id"])
+        conn.execute("UPDATE replays SET beatmapset_id = 9, day = '2026-09-06'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    from osu_pipeline import cli as cli_mod
+    from osu_pipeline import completion as completion_mod
+
+    monkeypatch.setattr(
+        beatmaps, "ensure_beatmap", lambda *a, **k: (9, tmp_path / "songs" / "9.osz"))
+    monkeypatch.setattr(
+        beatmaps, "find_audio_for_hash",
+        lambda *a, **k: (tmp_path / "s.mp3", 1.5))
+    (tmp_path / "s.mp3").write_bytes(b"ID3" + b"\x00" * 64)
+
+    def _probe(cfg_, spec_path, out_path):
+        import json as _j
+
+        rows = _j.loads(Path(spec_path).read_text())["spans"][0]["tiles"]
+        durs = {"a.osr": 60.0, "b.osr": 30.0}
+        out = [{"replay": t["replay"],
+                "duration_s": durs[Path(t["replay"]).name]} for t in rows]
+        Path(out_path).write_text(_j.dumps(out))
+
+    monkeypatch.setattr(cli_mod, "run_danser_grid_probe", _probe)
+
+    seen = {}
+
+    def _record(cfg_, spec_path, timeout):
+        import json as _j
+
+        spec = _j.loads(Path(spec_path).read_text())
+        seen["spans"] = spec["spans"]
+        for span in spec["spans"]:
+            seg = Path(spec["outDir"]) / f"{span['name']}.mp4"
+            seg.parent.mkdir(parents=True, exist_ok=True)
+            seg.write_bytes(b"seg")
+
+    monkeypatch.setattr(cli_mod, "run_danser_grid", _record)
+    monkeypatch.setattr(
+        completion_mod, "fetch_completion",
+        lambda url, timeout=30: completion_mod.CompletionStats("1,133", "147,163", "0.73%"))
+
+    from osu_pipeline import compositor as comp_mod
+
+    monkeypatch.setattr(comp_mod, "check_binaries", lambda: ("ffmpeg", "ffprobe"))
+    dissolved = {"n": 0}
+
+    def _dissolve(*a, **k):
+        dissolved["n"] += 1
+
+    monkeypatch.setattr(comp_mod, "encode_dissolve", _dissolve)
+    monkeypatch.setattr(comp_mod, "encode_seg_still",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(comp_mod, "encode_outro",
+                        lambda ffmpeg, graph, out_path, *a: Path(out_path).write_bytes(b"outro"))
+    monkeypatch.setattr(comp_mod, "concat_segments",
+                        lambda ffmpeg, segs, out_path, workdir, timeout=600:
+                        Path(out_path).write_bytes(b"joined"))
+    monkeypatch.setattr(comp_mod, "encode_grid_finish",
+                        lambda *a, **k: Path(a[3]).write_bytes(b"finished"))
+    monkeypatch.setattr(comp_mod, "encode_audio_mix",
+                        lambda *a, **k: Path(a[3]).write_bytes(b"mix"))
+    monkeypatch.setattr(comp_mod, "mux_audio_video",
+                        lambda *a, **k: Path(a[3]).write_bytes(b"final"))
+    monkeypatch.setattr(
+        comp_mod, "probe_clip",
+        lambda ffprobe, src: comp_mod.Clip(id=-1, path=Path(src), day=None,
+                                           duration=100.0, has_audio=True))
+
+    assert main(["--config", str(cfg), "compose", "--grid"]) == 0
+    spans = seen["spans"]
+    kinds = [s.get("kind", "static") for s in spans]
+    assert kinds == ["static", "morph", "static"]
+    morph = spans[1]
+    assert len(morph["tiles"]) == 2
+    tile = morph["tiles"][0]
+    assert {"ax", "ay", "aw", "ah", "bx", "by", "bw", "bh", "dying"} <= set(tile)
+    assert dissolved["n"] == 0
+    # every span (static + morph) has a direct danser-grid output
+    assert [s["name"] for s in spans] == ["seg-000", "seg-001", "seg-002"]
+
+
 def test_compose_grid_happy_path(tmp_path: Path, monkeypatch, capsys):
     root = tmp_path / "replays"
     root.mkdir()

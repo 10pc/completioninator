@@ -964,9 +964,11 @@ def _cmd_compose_grid(args, cfg) -> int:
     """Grid path: ready rows -> probe -> plan -> danser-grid spans -> video.
 
     No per-clip renders: durations come from danser-grid --probe (exact
-    MapEnd), audio from map mp3s, tiles from .osr files. Morphs always
-    dissolve in grid mode (no clip mp4s exist to glide). Any grid failure
-    falls back to one legacy render+compose pass for the batch.
+    wall time), audio from map mp3s, tiles from .osr files. Static spans
+    hold their layout; morph spans lerp live inside danser-grid (like
+    legacy glides), so the video timeline has no frozen time and matches
+    the audio mix exactly. Any grid failure falls back to one legacy
+    render+compose pass for the batch.
     """
     try:
         ffmpeg, ffprobe = compositor.check_binaries()
@@ -1116,15 +1118,24 @@ def _cmd_compose_grid(args, cfg) -> int:
     outro_dur = cfg.outro_seconds if comp_stats else 0.0
     n_seg = sum(isinstance(s, compositor.Segment) for s in timeline)
     n_morph = len(timeline) - n_seg
-    print(f"grid: {n_seg} static spans + {n_morph} dissolves"
+    print(f"grid: {n_seg} static spans + {n_morph} live morphs"
           f"{' + outro' if outro_dur else ''} -> {out_path}")
 
-    # Emit the record spec: static spans only (morphs dissolve between
-    # grid outputs, same as the oversized-morph path).
+    # Emit the record spec: static spans hold their layout; morph spans lerp
+    # tiles live inside danser-grid (like legacy glides). One continuous
+    # timeline, no frozen time anywhere — video matches the audio mix.
     osr_of = {r["id"]: str(cfg.replays_dir / r["path"]) for r in ok_rows}
     grid_spans = []
     for i, span_item in enumerate(timeline):
         if isinstance(span_item, compositor.MorphSpan):
+            grid_spans.append({
+                "name": f"seg-{i:03d}", "start": span_item.start, "end": span_item.end,
+                "kind": "morph",
+                "tiles": [{"replay": osr_of[t.clip_id],
+                           "ax": t.ax, "ay": t.ay, "aw": t.aw, "ah": t.ah,
+                           "bx": t.bx, "by": t.by, "bw": t.bw, "bh": t.bh,
+                           "dying": t.dying} for t in span_item.tiles],
+            })
             continue
         k = len(span_item.active)
         cols, rows_ = compositor.grid_dims(k)
@@ -1133,6 +1144,7 @@ def _cmd_compose_grid(args, cfg) -> int:
                                         grid_h, cfg.header_height)
         grid_spans.append({
             "name": f"seg-{i:03d}", "start": span_item.start, "end": span_item.end,
+            "kind": "static",
             "tiles": [{"replay": osr_of[c.id], "x": r.x, "y": r.y, "w": r.w, "h": r.h}
                       for c, r in zip(span_item.active, rects)],
         })
@@ -1150,32 +1162,9 @@ def _cmd_compose_grid(args, cfg) -> int:
     try:
         run_danser_grid(cfg, grid_path, cfg.grid_timeout_seconds)
         for i, span_item in enumerate(timeline):
-            if isinstance(span_item, compositor.MorphSpan):
-                continue
             seg_paths[i] = workdir / "grid" / f"seg-{i:03d}.mp4"
             if not seg_paths[i].exists():
                 raise GridError(f"danser-grid missing output for seg-{i:03d}")
-        # Morphs always dissolve in grid mode (no clip mp4s exist to glide).
-        for i, span_item in enumerate(timeline):
-            if not isinstance(span_item, compositor.MorphSpan):
-                continue
-            seg_path = workdir / f"seg-{i:03d}.mp4"
-            neighbors = _dissolve_neighbors(timeline, i)
-            if neighbors is None:
-                raise GridError(f"morph at index {i} has no neighboring static span")
-            prev, nxt = neighbors
-            a_idx = prev if prev is not None else nxt
-            b_idx = nxt if nxt is not None else prev
-            still_a = workdir / f"seg-{i:03d}-a.png"
-            still_b = workdir / f"seg-{i:03d}-b.png"
-            compositor.encode_seg_still(ffmpeg, seg_paths[a_idx], still_a,
-                                        last=prev is not None)
-            compositor.encode_seg_still(ffmpeg, seg_paths[b_idx], still_b,
-                                        last=False)
-            compositor.encode_dissolve(ffmpeg, still_a, still_b, span_item.length,
-                                       cfg.video_fps, seg_path,
-                                       cfg.video_preset, cfg.video_crf)
-            seg_paths[i] = seg_path
         if outro_dur:
             outro_path = workdir / "seg-outro.mp4"
             outro_graph = workdir / f"seg-outro.txt"
