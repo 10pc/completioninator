@@ -435,7 +435,7 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
         # adelay goes AFTER asetpts (which would reset its shift to zero).
         delay = ""
         if c.audio_delay > 0:
-            delay = f",adelay={int(round(c.audio_delay * 1000))}|all=1"
+            delay = f",adelay=delays={int(round(c.audio_delay * 1000))}:all=1"
         chains.append(f"[{i}:a]{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}[a{i}]")
     if len(voiced) == 1:
         chains.append("[a0]anull[amix]")
