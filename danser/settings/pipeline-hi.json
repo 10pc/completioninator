@@ -60,7 +60,8 @@
       "Show": false
     },
     "ScoreBoard": {
-      "Show": false
+      "Show": false,
+      "ShowAvatars": false
     }
   },
   "Playfield": {

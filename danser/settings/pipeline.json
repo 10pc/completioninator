@@ -29,7 +29,7 @@
     "HitCounter": {"Show": false},
     "AimErrorMeter": {"Show": false},
     "StrainGraph": {"Show": false},
-    "ScoreBoard": {"Show": false}
+    "ScoreBoard": {"Show": false, "ShowAvatars": false}
   },
   "Playfield": {
     "SeizureWarning": {"Enabled": false},
