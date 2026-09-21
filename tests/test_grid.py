@@ -214,10 +214,13 @@ def test_compose_grid_live_morphs(tmp_path: Path, monkeypatch, capsys):
 
         spec = _j.loads(Path(spec_path).read_text())
         seen["spans"] = spec["spans"]
+        seen["spec"] = spec
         for span in spec["spans"]:
             seg = Path(spec["outDir"]) / f"{span['name']}.mp4"
             seg.parent.mkdir(parents=True, exist_ok=True)
             seg.write_bytes(b"seg")
+        # the binary appends the terminal outro span itself
+        (Path(spec["outDir"]) / "seg-outro.mp4").write_bytes(b"outro-seg")
 
     monkeypatch.setattr(cli_mod, "run_danser_grid", _record)
     monkeypatch.setattr(
@@ -262,6 +265,89 @@ def test_compose_grid_live_morphs(tmp_path: Path, monkeypatch, capsys):
     assert dissolved["n"] == 0
     # every span (static + morph) has a direct danser-grid output
     assert [s["name"] for s in spans] == ["seg-000", "seg-001", "seg-002"]
+    # overlay blocks ride the spec (header + outro lines preformatted outside)
+    spec = seen["spec"]
+    assert "2 maps" in spec["header"]["line"]
+    assert spec["outro"] == {"line1": "1,133/147,163", "line2": "0.73%"}
+    assert "player" not in spec  # fake replays: no usernames, no card
+
+
+def test_grid_overlay_blocks_player(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from osu_pipeline import cli as cli_mod
+    from osu_pipeline import completion as completion_mod
+    from osu_pipeline import osu_player
+
+    cfg = SimpleNamespace(osu_client_id="id", osu_client_secret="secret")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    ok_rows = [{"id": 1, "path": "a.osr"}, {"id": 2, "path": "b.osr"}]
+    user_of = {1: "kaupec1", 2: "kaupec1"}
+    stats = completion_mod.CompletionStats("1,133", "147,163", "0.73%")
+
+    def _fetch(username, cid, secret, timeout=30):
+        assert (username, cid, secret) == ("kaupec1", "id", "secret")
+        return osu_player.PlayerProfile(
+            username="kaupec1", user_id=7, rank="#12,345", country="ID",
+            avatar_url="https://a.ppy.sh/7")
+
+    def _dl(url, dest, timeout=60):
+        assert url == "https://a.ppy.sh/7"
+        return Path(dest).write_bytes(b"PNGDATA") or Path(dest)
+
+    monkeypatch.setattr(osu_player, "fetch_player", _fetch)
+    monkeypatch.setattr(osu_player, "download_avatar", _dl)
+    header, outro, player = cli_mod._grid_overlay_blocks(
+        cfg, workdir, ok_rows, user_of, "20-09-2026 | 2 maps", stats)
+    assert header == {"line": "20-09-2026 | 2 maps"}
+    assert outro == {"line1": "1,133/147,163", "line2": "0.73%"}
+    assert player == {"username": "kaupec1", "rank": "#12,345", "country": "ID",
+                      "avatar": str(workdir / "avatar.png")}
+    assert (workdir / "avatar.png").exists()
+
+    # multi-user: warn + card the first, omit the rest
+    user_of2 = {1: "kaupec1", 2: "other"}
+    _, _, player2 = cli_mod._grid_overlay_blocks(
+        cfg, workdir, ok_rows, user_of2, "h", stats)
+    assert player2["username"] == "kaupec1"
+
+    # API down: text-only card from the osr username
+    def _boom(*a, **k):
+        raise osu_player.PlayerError("down")
+
+    monkeypatch.setattr(osu_player, "fetch_player", _boom)
+    _, _, player3 = cli_mod._grid_overlay_blocks(
+        cfg, workdir, ok_rows, user_of, "h", stats)
+    assert player3 == {"username": "kaupec1", "rank": "", "country": "",
+                       "avatar": ""}
+
+    # no usernames at all: no card
+    _, _, player4 = cli_mod._grid_overlay_blocks(
+        cfg, workdir, ok_rows, {}, "h", stats)
+    assert player4 is None
+
+    # no stats: no outro (binary skips the terminal span)
+    header5, outro5, _ = cli_mod._grid_overlay_blocks(
+        cfg, workdir, ok_rows, user_of, "h", None)
+    assert header5 == {"line": "h"} and outro5 is None
+
+
+def test_osu_player_parse():
+    from osu_pipeline import osu_player
+
+    p = osu_player.parse_profile("kaupec1", {
+        "id": 7, "username": "kaupec1",
+        "country_code": "ID", "avatar_url": "https://a.ppy.sh/7",
+        "statistics": {"global_rank": 12345}})
+    assert (p.username, p.user_id, p.rank, p.country) == (
+        "kaupec1", 7, "#12,345", "ID")
+    assert p.avatar_fallback_url == "https://a.ppy.sh/7"
+    try:
+        osu_player.parse_profile("x", {"id": 0})
+        assert False, "expected PlayerError"
+    except osu_player.PlayerError:
+        pass
 
 
 def test_compose_grid_happy_path(tmp_path: Path, monkeypatch, capsys):
@@ -308,6 +394,7 @@ def test_compose_grid_happy_path(tmp_path: Path, monkeypatch, capsys):
             seg = Path(spec["outDir"]) / f"{span['name']}.mp4"
             seg.parent.mkdir(parents=True, exist_ok=True)
             seg.write_bytes(b"seg")
+        (Path(spec["outDir"]) / "seg-outro.mp4").write_bytes(b"outro-seg")
 
     monkeypatch.setattr(cli_mod, "run_danser_grid", _record)
     monkeypatch.setattr(

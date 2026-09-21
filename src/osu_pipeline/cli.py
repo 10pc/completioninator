@@ -960,6 +960,65 @@ def _fallback_legacy_compose(args, cfg, ids: list) -> int:
     return _cmd_compose(args, cfg)
 
 
+def _grid_outro_seconds(cfg, fallback: float) -> float:
+    """Outro duration from the danser grid settings (it renders the outro).
+
+    Single source of truth: danser owns outro rendering, so its config owns
+    the duration. Falls back when the profile is unreadable.
+    """
+    try:
+        from pathlib import Path as _Path
+
+        profile = _Path(str(cfg.grid_binary)).parent / "settings" / f"{cfg.danser_settings}.json"
+        data = json.loads(profile.read_text(encoding="utf-8"))
+        dur = float(data.get("Grid", {}).get("Outro", {}).get("Duration", fallback))
+        return dur if dur > 0 else fallback
+    except Exception:  # noqa: BLE001 - missing/unparseable profile
+        return fallback
+
+
+def _grid_overlay_blocks(cfg, workdir, ok_rows, user_of, header_line, comp_stats):
+    """Header/outro/player spec blocks; strings computed outside danser-grid.
+
+    Multi-user batches warn and card the first username, omitting the rest.
+    Profile/API failures degrade to a text-only card (osr username) or no
+    card at all — never a failed batch.
+    """
+    from . import osu_player
+
+    header = {"line": header_line} if header_line else None
+    outro = None
+    if comp_stats:
+        outro = {"line1": comp_stats.line1, "line2": comp_stats.line2}
+    users = []
+    for row in ok_rows:
+        u = user_of.get(row["id"], "")
+        if u and u not in users:
+            users.append(u)
+    if len(users) > 1:
+        print(f"warning: {len(users)} users in batch; carding {users[0]}, omitting the rest")
+    if not users:
+        return header, outro, None
+    username = users[0]
+    rank, country, avatar = "", "", ""
+    try:
+        profile = osu_player.fetch_player(
+            username, cfg.osu_client_id, cfg.osu_client_secret)
+        rank, country = profile.rank, profile.country
+        try:
+            url = profile.avatar_url or profile.avatar_fallback_url
+            dest = workdir / "avatar.png"
+            osu_player.download_avatar(url, dest)
+            avatar = str(dest)
+        except osu_player.PlayerError as exc:
+            print(f"avatar unavailable ({exc}); text-only card")
+    except osu_player.PlayerError as exc:
+        print(f"player profile unavailable ({exc}); text-only card")
+    player = {"username": username, "rank": rank, "country": country,
+              "avatar": avatar}
+    return header, outro, player
+
+
 def _cmd_compose_grid(args, cfg) -> int:
     """Grid path: ready rows -> probe -> plan -> danser-grid spans -> video.
 
@@ -998,6 +1057,7 @@ def _cmd_compose_grid(args, cfg) -> int:
     # Re-ensure (cheap cache check; Songs copies get eaten) + resolve audio.
     conn = database.connect(db_path)
     audio_of: dict = {}
+    user_of: dict = {}
     ok_rows = []
     try:
         for row in rows:
@@ -1017,10 +1077,14 @@ def _cmd_compose_grid(args, cfg) -> int:
             try:
                 from osrparse import Replay as _Replay
 
-                rate = compositor.rate_for_mods(_Replay.from_path(src).mods)
+                _rp = _Replay.from_path(src)
+                rate = compositor.rate_for_mods(_rp.mods)
+                replay_user = str(_rp.username or "")
             except Exception:  # noqa: BLE001 - unparseable replay: mix at 1x
                 rate = 1.0
+                replay_user = ""
             audio_of[row["id"]] = (mp3, offset, rate)
+            user_of[row["id"]] = replay_user
             if mp3 is None:
                 print(f"[job-{row['id']}] no mp3; video only")
             ok_rows.append(row)
@@ -1115,7 +1179,9 @@ def _cmd_compose_grid(args, cfg) -> int:
                                         width=cfg.video_width, grid_h=grid_h,
                                         header_h=cfg.header_height,
                                         quant=cfg.segment_quant)
-    outro_dur = cfg.outro_seconds if comp_stats else 0.0
+    outro_dur = _grid_outro_seconds(cfg, cfg.outro_seconds) if comp_stats else 0.0
+    header_block, outro_block, player_block = _grid_overlay_blocks(
+        cfg, workdir, ok_rows, user_of, header, comp_stats)
     n_seg = sum(isinstance(s, compositor.Segment) for s in timeline)
     n_morph = len(timeline) - n_seg
     print(f"grid: {n_seg} static spans + {n_morph} live morphs"
@@ -1151,6 +1217,12 @@ def _cmd_compose_grid(args, cfg) -> int:
     grid_spec = {"width": cfg.video_width, "height": cfg.video_height,
                  "fps": cfg.video_fps, "outDir": str(workdir / "grid"),
                  "spans": grid_spans}
+    if header_block is not None:
+        grid_spec["header"] = header_block
+    if outro_block is not None:
+        grid_spec["outro"] = outro_block
+    if player_block is not None:
+        grid_spec["player"] = player_block
     grid_path = workdir / "grid.json"
     grid_path.write_text(json.dumps(grid_spec))
 
@@ -1166,24 +1238,20 @@ def _cmd_compose_grid(args, cfg) -> int:
             if not seg_paths[i].exists():
                 raise GridError(f"danser-grid missing output for seg-{i:03d}")
         if outro_dur:
-            outro_path = workdir / "seg-outro.mp4"
-            outro_graph = workdir / f"seg-outro.txt"
-            outro_graph.write_text(compositor.build_outro_graph(
-                cfg.video_width, cfg.video_height, outro_dur,
-                comp_stats.line1, comp_stats.line2,
-                cfg.fontfile, cfg.outro_fontsize, cfg.outro_fontsize_sub))
-            compositor.encode_outro(ffmpeg, outro_graph, outro_path,
-                                    cfg.video_preset, cfg.video_crf, 600)
+            # Fully moved to danser-grid: the outro is a terminal span in the
+            # record spec (config duration, spec lines). Python only joins it.
+            outro_path = workdir / "grid" / "seg-outro.mp4"
+            if not outro_path.exists():
+                raise GridError("danser-grid missing outro output (seg-outro.mp4)")
         compositor.concat_segments(ffmpeg, seg_paths, video_tmp, workdir)
-        # Legacy parity: danser-grid spans are bare canvas (blank header bar,
-        # no tail fade), so burn the header text and the 1s fade into the
-        # outro in one finishing pass over the concatenated CONTENT. The
+        # Header/outro are burned in-binary now; the finishing pass only
+        # carries the 1s tail fade into the outro over the CONTENT. The
         # outro joins after: fade=t=out would hold everything past its
         # window black, so it must never see the outro.
         content_end = timeline[-1].end if timeline else content_len
         finish_graph = workdir / "finish.txt"
         finish_graph.write_text(compositor.build_grid_finish_graph(
-            header, cfg.fontfile, 36, cfg.header_height,
+            "", cfg.fontfile, 36, cfg.header_height,
             fade_out=1.0 if outro_dur else 0.0,
             fade_start=content_end - 1.0 if outro_dur and content_end > 1.0 else 0.0))
         finished_tmp = workdir / "video-finished.mp4"
