@@ -40,7 +40,11 @@ class PlayerProfile:
 
 def _post_json(url: str, data: dict, timeout: int) -> dict:
     body = urllib.parse.urlencode(data).encode()
-    req = urllib.request.Request(url, data=body, method="POST")
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded",
+                 "Accept": "application/json",
+                 "User-Agent": "osu-completionist-pipeline/0.2"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.load(resp)
