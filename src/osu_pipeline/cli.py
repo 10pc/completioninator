@@ -1140,14 +1140,14 @@ def _cmd_compose_grid(args, cfg) -> int:
         if key not in durations:
             continue
         mp3, _offset, rate = audio_of[row["id"]]
-        # Grid tiles start in lead-in (negative map clock): delay the mp3 so
-        # song zero meets map zero. The old -ss seek assumed -skip trimming
-        # the video too, which grid never does (hence the constant offset).
-        delay = max(0.0, -start_offsets.get(key, 0.0) / 1000.0 / (rate or 1.0))
+        # Align song position with the tile clock, which starts at the probe
+        # start offset: skipped intros seek forward, lead-ins delay.
+        seek, delay = compositor.split_seek_delay(
+            start_offsets.get(key, 0.0), rate)
         clips.append(compositor.Clip(
             id=row["id"], path=mp3 if mp3 is not None else Path(key),
             day=row["day"], duration=durations[key],
-            has_audio=mp3 is not None, audio_offset=0.0,
+            has_audio=mp3 is not None, audio_offset=seek,
             audio_rate=rate, audio_delay=delay))
     if not clips:
         print("nothing composable: no probed durations")

@@ -43,7 +43,6 @@ class Clip:
     # video start. Applied AFTER atempo (delay counts in output time).
     audio_delay: float = 0.0
 
-
 def rate_for_mods(mods: int) -> float:
     """Gameplay rate for an osu! mod bitmask (DT/NC 1.5x, HT 0.75x)."""
     if mods & (64 | 512):  # DoubleTime | Nightcore
@@ -51,6 +50,14 @@ def rate_for_mods(mods: int) -> float:
     if mods & 256:  # HalfTime
         return 0.75
     return 1.0
+
+
+def split_seek_delay(start_ms: float, rate: float) -> tuple[float, float]:
+    """(seek_s, delay_s) aligning song position with a tile clock that
+    starts at start_ms (probe start offset): skipped intros (positive)
+    seek the mp3 forward pre-tempo, lead-ins (negative) delay it."""
+    rate = rate or 1.0
+    return max(0.0, start_ms) / 1000.0, max(0.0, -start_ms) / 1000.0 / rate
 
 
 def atempo_chain(rate: float) -> str:

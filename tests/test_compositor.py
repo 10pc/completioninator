@@ -266,6 +266,12 @@ def test_rate_for_mods():
     assert compositor.rate_for_mods(256) == 0.75  # HT
 
 
+def test_split_seek_delay():
+    assert compositor.split_seek_delay(8000.0, 1.5) == (8.0, 0.0)
+    assert compositor.split_seek_delay(-4469.0, 1.5) == (0.0, 4469.0 / 1000.0 / 1.5)
+    assert compositor.split_seek_delay(0.0, 1.0) == (0.0, 0.0)
+
+
 def test_audio_graph_applies_tempo_per_track():
     plain = [_clip(1, 100.0)]
     script, _ = compositor.build_audio_graph(plain, 100.0, 106.0)
