@@ -481,6 +481,12 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
         return "", False
     chains = []
     for i, c in enumerate(voiced):
+        # Seek in-filter (atrim), NOT with input -ss: ffmpeg estimates VBR
+        # mp3 positions by bitrate, which lands seconds off and stays off.
+        # atrim discards decoded samples, so it is sample-accurate.
+        trim = ""
+        if c.audio_offset > 0:
+            trim = f"atrim=start={c.audio_offset:.3f},"
         tempo = atempo_chain(c.audio_rate)
         # adelay goes AFTER asetpts (which would reset its shift to zero).
         delay = ""
@@ -489,7 +495,7 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
         # loudnorm upsamples internally: re-pin 48k after it so the amix
         # sees uniform inputs.
         level = ",loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000" if level_tracks else ""
-        chains.append(f"[{i}:a]{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}{level}[a{i}]")
+        chains.append(f"[{i}:a]{trim}{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}{level}[a{i}]")
     if n_hits:
         idx = len(voiced)
         chains.append(f"[{idx}:a]aresample=48000,asetpts=PTS-STARTPTS[a{idx}]")
@@ -515,9 +521,8 @@ def encode_audio_mix(ffmpeg: str, clips: list[Clip], graph_file: Path,
                      hits_path: Path | None = None) -> None:
     voiced = select_mix_clips(clips, max_tracks)
     cmd = ["ffmpeg", "-y", "-v", "error"]
+    # No input -ss here: seeks live in-filter (atrim, sample-accurate).
     for c in voiced:
-        if c.audio_offset > 0:
-            cmd += ["-ss", f"{c.audio_offset:.3f}"]
         cmd += ["-i", str(c.path)]
     if hits_path is not None:
         cmd += ["-i", str(hits_path)]

@@ -296,6 +296,27 @@ def test_audio_graph_delays_track_past_lead_in():
     assert "[0:a]atempo=1.5,aresample=48000,asetpts=PTS-STARTPTS,adelay=delays=4469:all=1[a0]" in script
 
 
+def test_audio_graph_seeks_in_filter_not_input(tmp_path, monkeypatch):
+    import subprocess
+
+    clips = [_clip(1, 100.0)]
+    clips[0].audio_offset = 21.575
+    script, _ = compositor.build_audio_graph(clips, 100.0, 106.0)
+    assert "[0:a]atrim=start=21.575,aresample=48000" in script
+
+    seen = {}
+
+    def _fake_run(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    graph = tmp_path / "g.txt"
+    graph.write_text("graph")
+    compositor.encode_audio_mix("ffmpeg", clips, graph, tmp_path / "a.m4a", 60)
+    assert "-ss" not in seen["cmd"]  # seeks live in-filter (VBR-safe)
+
+
 def test_audio_graph_levels_grid_only():
     clips = [_clip(1, 100.0)]
     script, _ = compositor.build_audio_graph(clips, 100.0, 106.0)
