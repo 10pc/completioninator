@@ -402,7 +402,11 @@ def test_span_hits_retimed_exact(tmp_path, monkeypatch):
     assert "apad=whole_dur=61.500" in " ".join(per_span)
     synth = seen["cmds"][1]
     assert "anullsrc" in " ".join(synth) and "2.000" in synth
-    assert "-f" in seen["cmds"][2]  # final concat pass
+    final = seen["cmds"][2]
+    assert "-f" in final and "concat" in final
+    # final join re-encodes: copy-concat would stack per-file AAC priming
+    assert "-c" not in final or "copy" not in final
+    assert "aac" in final
 
 
 def test_audio_mix_uses_longest_n_tracks():

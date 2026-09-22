@@ -456,8 +456,13 @@ def concat_span_hits(ffmpeg: str, grid_dir: Path, span_names: list[str],
         parts.append(seg)
     lst = workdir / "hits-concat.txt"
     lst.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))
+    # Re-encode (NOT -c copy): decoding applies each segment's edit list,
+    # so per-file AAC priming (~21ms) cannot accumulate into seconds of
+    # drift across dozens of spans. Copy-concat strings raw payloads and
+    # stacks every file's priming end to end.
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
-           "-i", str(lst), "-c", "copy", str(out_path)]
+           "-i", str(lst), "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+           str(out_path)]
     subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
 
 
