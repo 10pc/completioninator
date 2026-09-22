@@ -436,6 +436,19 @@ def test_outro_graph_text_fades():
     assert graph.rstrip().endswith("[vout]")
 
 
+def test_clip_end_times_and_gate():
+    a = _clip(1, 60.0)
+    b = _clip(2, 30.0)
+    tl = compositor.plan_timeline([a, b], morph_s=1.0, quant=0.5)
+    ends = compositor.clip_end_times(tl)
+    assert ends[2] <= 30.0 and ends[1] >= ends[2]
+    b.audio_end = ends[2]
+    script, _ = compositor.build_audio_graph([a, b], 60.0, 66.0)
+    assert "volume=enable='lte(t,%.3f)':volume=0" % ends[2] in script
+    script, _ = compositor.build_audio_graph([_clip(1, 60.0)], 60.0, 66.0)
+    assert "volume=enable" not in script
+
+
 def test_single_clip_skips_xstack():
     seg = compositor.Segment(start=0.0, end=60.0, active=[_clip(1, 60.0)])
     graph = compositor.build_segment_graph(

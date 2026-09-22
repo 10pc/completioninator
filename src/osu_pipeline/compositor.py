@@ -42,6 +42,10 @@ class Clip:
     # lead-in (negative map clock), so song zero meets map zero, not the
     # video start. Applied AFTER atempo (delay counts in output time).
     audio_delay: float = 0.0
+    # Last video-second this tile is present (0 = full length): the mix
+    # mutes past it so audio never outlives the tile (plan quantizes
+    # boundaries, probe durations don't).
+    audio_end: float = 0.0
 
 def rate_for_mods(mods: int) -> float:
     """Gameplay rate for an osu! mod bitmask (DT/NC 1.5x, HT 0.75x)."""
@@ -425,6 +429,23 @@ def select_mix_clips(clips: list[Clip], max_tracks: int) -> list[Clip]:
     return voiced if max_tracks <= 0 else voiced[:max_tracks]
 
 
+def clip_end_times(timeline: list) -> dict:
+    """Last video-second each clip id is present (segments + morphs).
+
+    Timelines tile fully with permanent departures, so one end per clip
+    suffices; morph tiles count (dying tiles play out while shrinking).
+    """
+    ends: dict = {}
+    for span_item in timeline:
+        if isinstance(span_item, MorphSpan):
+            ids = [t.clip_id for t in span_item.tiles]
+        else:
+            ids = [c.id for c in span_item.active]
+        for i in ids:
+            ends[i] = span_item.end
+    return ends
+
+
 def concat_span_hits(ffmpeg: str, grid_dir: Path, span_names: list[str],
                      span_lengths: dict, out_path: Path, workdir: Path,
                      timeout: int = 300) -> None:
@@ -500,7 +521,12 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
         # loudnorm upsamples internally: re-pin 48k after it so the amix
         # sees uniform inputs.
         level = ",loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000" if level_tracks else ""
-        chains.append(f"[{i}:a]{trim}{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}{level}[a{i}]")
+        # Mute past the tile's last video presence (quantized plan ends
+        # early; raw durations would ring up to 0.5s past the picture).
+        gate = ""
+        if c.audio_end > 0:
+            gate = f",volume=enable='lte(t,{c.audio_end:.3f})':volume=0"
+        chains.append(f"[{i}:a]{trim}{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}{level}{gate}[a{i}]")
     if n_hits:
         idx = len(voiced)
         chains.append(f"[{idx}:a]aresample=48000,asetpts=PTS-STARTPTS[a{idx}]")

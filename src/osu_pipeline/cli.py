@@ -1297,6 +1297,11 @@ def _cmd_compose_grid(args, cfg) -> int:
             video_tmp.unlink(missing_ok=True)
             joined_tmp.rename(video_tmp)
             outro_path.unlink(missing_ok=True)
+        # Audio must die with the picture: plan boundaries are quantized
+        # early, raw probe durations ring up to 0.5s past them.
+        ends = compositor.clip_end_times(timeline)
+        for c in kept:
+            c.audio_end = ends.get(c.id, 0.0)
         audio_script, has_audio = compositor.build_audio_graph(
             kept, content_len, total_len, max_tracks=cfg.audio_max_tracks,
             level_tracks=True, hits_path=hits_tmp, fade_in=2.0)
