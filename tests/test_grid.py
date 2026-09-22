@@ -294,7 +294,7 @@ def test_grid_overlay_blocks_player(tmp_path: Path, monkeypatch):
         assert (username, cid, secret) == ("kaupec1", "id", "secret")
         return osu_player.PlayerProfile(
             username="kaupec1", user_id=7, rank="#12,345", country="ID",
-            avatar_url="https://a.ppy.sh/7")
+            avatar_url="https://a.ppy.sh/7", cover_url="")
 
     def _dl(url, dest, timeout=60):
         assert url == "https://a.ppy.sh/7"
@@ -307,7 +307,7 @@ def test_grid_overlay_blocks_player(tmp_path: Path, monkeypatch):
     assert header == {"line": "20-09-2026 | 2 maps"}
     assert outro == {"line1": "1,133/147,163", "line2": "0.73%"}
     assert player == {"username": "kaupec1", "rank": "#12,345", "country": "ID",
-                      "avatar": str(workdir / "avatar.png")}
+                      "avatar": str(workdir / "avatar.png"), "banner": ""}
     assert (workdir / "avatar.png").exists()
 
     # multi-user: warn + card the first, omit the rest
@@ -324,7 +324,7 @@ def test_grid_overlay_blocks_player(tmp_path: Path, monkeypatch):
     _, _, player3 = cli_mod._grid_overlay_blocks(
         cfg, workdir, ok_rows, user_of, "h", stats)
     assert player3 == {"username": "kaupec1", "rank": "", "country": "",
-                       "avatar": ""}
+                       "avatar": "", "banner": ""}
 
     # no usernames at all: no card
     _, _, player4 = cli_mod._grid_overlay_blocks(
@@ -343,10 +343,15 @@ def test_osu_player_parse():
     p = osu_player.parse_profile("kaupec1", {
         "id": 7, "username": "kaupec1",
         "country_code": "ID", "avatar_url": "https://a.ppy.sh/7",
+        "cover": {"custom_url": "https://assets.ppy.sh/cover-c.png",
+                  "url": "https://assets.ppy.sh/cover.png"},
         "statistics": {"global_rank": 12345}})
     assert (p.username, p.user_id, p.rank, p.country) == (
         "kaupec1", 7, "#12,345", "ID")
     assert p.avatar_fallback_url == "https://a.ppy.sh/7"
+    assert p.cover_url == "https://assets.ppy.sh/cover-c.png"
+    p2 = osu_player.parse_profile("x", {"id": 9, "statistics": {}})
+    assert p2.cover_url == "" and p2.rank == "#—"
     try:
         osu_player.parse_profile("x", {"id": 0})
         assert False, "expected PlayerError"

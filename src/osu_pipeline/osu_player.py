@@ -31,6 +31,7 @@ class PlayerProfile:
     rank: str  # global, formatted "#12,345"
     country: str  # "ID"-style code
     avatar_url: str
+    cover_url: str = ""  # profile banner (custom preferred, default fallback)
 
     @property
     def avatar_fallback_url(self) -> str:
@@ -68,12 +69,15 @@ def parse_profile(username: str, payload: dict) -> PlayerProfile:
         raise PlayerError(f"bad profile payload for {username}: {exc}") from exc
     if uid <= 0:
         raise PlayerError(f"unknown user {username}")
+    cover = payload.get("cover") or {}
+    cover_url = str(cover.get("custom_url") or cover.get("url") or "")
     return PlayerProfile(
         username=str(payload.get("username") or username),
         user_id=uid,
         rank=f"#{rank_num:,}" if rank_num > 0 else "#—",
         country=country,
         avatar_url=avatar,
+        cover_url=cover_url,
     )
 
 
@@ -107,4 +111,33 @@ def download_avatar(url: str, dest: Path, timeout: int = 60) -> Path:
     if len(data) < 256 or not data.startswith((b"\x89PNG", b"\xff\xd8\xff", b"GIF8")):
         raise PlayerError(f"avatar download returned {len(data)} junk bytes")
     dest.write_bytes(data)
+    return dest
+
+
+def prepare_plate(cover_url: str, dest: Path, width: int, height: int,
+                  ffmpeg: str = "ffmpeg", timeout: int = 120) -> Path:
+    """Card background plate from the profile banner: center-crop to the
+    card aspect, blur, darken. Raises PlayerError on any failure (caller
+    falls back to the plain black rect)."""
+    import subprocess
+    import tempfile
+
+    if not cover_url:
+        raise PlayerError("no cover url")
+    with tempfile.TemporaryDirectory() as tmp:
+        raw = Path(tmp) / "cover"
+        download_avatar(cover_url, raw)
+        cmd = [ffmpeg, "-y", "-v", "error", "-i", str(raw),
+               "-vf", (f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
+                       f"crop={width * 2}:{height * 2},"
+                       f"boxblur=luma_radius=20:luma_power=2,"
+                       f"colorchannelmixer=rr=0.55:gg=0.55:bb=0.55,"
+                       f"scale={width}:{height}"),
+               "-frames:v", "1", str(dest)]
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+        except Exception as exc:
+            raise PlayerError(f"plate render failed: {exc}") from exc
+    if not dest.exists():
+        raise PlayerError("plate render produced no output")
     return dest
