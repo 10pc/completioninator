@@ -1237,6 +1237,17 @@ def _cmd_compose_grid(args, cfg) -> int:
             seg_paths[i] = workdir / "grid" / f"seg-{i:03d}.mp4"
             if not seg_paths[i].exists():
                 raise GridError(f"danser-grid missing output for seg-{i:03d}")
+        failed_manifest = workdir / "grid" / "grid-failed.json"
+        if failed_manifest.exists():
+            try:
+                dropped = json.loads(failed_manifest.read_text())
+            except ValueError:
+                dropped = []
+            if dropped:
+                print(f"grid: {len(dropped)} tile(s) dropped mid-record "
+                      f"(black cells past failure point, audio kept):")
+                for d in dropped[:10]:
+                    print(f"  dropped: {Path(d).name}")
         if outro_dur:
             # Fully moved to danser-grid: the outro is a terminal span in the
             # record spec (config duration, spec lines). Python only joins it.
@@ -1270,7 +1281,8 @@ def _cmd_compose_grid(args, cfg) -> int:
             joined_tmp.rename(video_tmp)
             outro_path.unlink(missing_ok=True)
         audio_script, has_audio = compositor.build_audio_graph(
-            kept, content_len, total_len, max_tracks=cfg.audio_max_tracks)
+            kept, content_len, total_len, max_tracks=cfg.audio_max_tracks,
+            level_tracks=True)
         if has_audio:
             (workdir / "audio.txt").write_text(audio_script)
             compositor.encode_audio_mix(ffmpeg, kept, workdir / "audio.txt", audio_tmp,

@@ -419,12 +419,16 @@ def select_mix_clips(clips: list[Clip], max_tracks: int) -> list[Clip]:
 
 
 def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
-                      max_tracks: int = 10) -> tuple[str, bool]:
+                      max_tracks: int = 10, level_tracks: bool = False) -> tuple[str, bool]:
     """One continuous mix of the longest voiced clips (full timeline, no seeks).
 
     Finished clips fall silent as their inputs end, so the mix naturally
     thins out exactly like the grid. The tail fades out over the final 2s of
     content, then silence pads through the outro. Returns (script, has_audio).
+
+    level_tracks runs single-pass loudnorm per input first: stacked raw mp3s
+    carry wildly different masters, while danser-recorded clip audio arrives
+    gain-staged. Grid-only; legacy sound is untouched.
     """
     voiced = select_mix_clips(clips, max_tracks)
     if not voiced:
@@ -436,7 +440,10 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
         delay = ""
         if c.audio_delay > 0:
             delay = f",adelay=delays={int(round(c.audio_delay * 1000))}:all=1"
-        chains.append(f"[{i}:a]{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}[a{i}]")
+        # loudnorm upsamples internally: re-pin 48k after it so the amix
+        # sees uniform inputs.
+        level = ",loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000" if level_tracks else ""
+        chains.append(f"[{i}:a]{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}{level}[a{i}]")
     if len(voiced) == 1:
         chains.append("[a0]anull[amix]")
     else:

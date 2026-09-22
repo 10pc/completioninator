@@ -221,6 +221,9 @@ def test_compose_grid_live_morphs(tmp_path: Path, monkeypatch, capsys):
             seg.write_bytes(b"seg")
         # the binary appends the terminal outro span itself
         (Path(spec["outDir"]) / "seg-outro.mp4").write_bytes(b"outro-seg")
+        # plus a drop manifest when tiles die mid-record
+        (Path(spec["outDir"]) / "grid-failed.json").write_text(
+            _j.dumps(["/replays/b.osr"]))
 
     monkeypatch.setattr(cli_mod, "run_danser_grid", _record)
     monkeypatch.setattr(
@@ -270,6 +273,7 @@ def test_compose_grid_live_morphs(tmp_path: Path, monkeypatch, capsys):
     assert "2 maps" in spec["header"]["line"]
     assert spec["outro"] == {"line1": "1,133/147,163", "line2": "0.73%"}
     assert "player" not in spec  # fake replays: no usernames, no card
+    assert "dropped mid-record" in capsys.readouterr().out
 
 
 def test_grid_overlay_blocks_player(tmp_path: Path, monkeypatch):

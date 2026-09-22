@@ -290,6 +290,14 @@ def test_audio_graph_delays_track_past_lead_in():
     assert "[0:a]atempo=1.5,aresample=48000,asetpts=PTS-STARTPTS,adelay=delays=4469:all=1[a0]" in script
 
 
+def test_audio_graph_levels_grid_only():
+    clips = [_clip(1, 100.0)]
+    script, _ = compositor.build_audio_graph(clips, 100.0, 106.0)
+    assert "loudnorm" not in script
+    script, _ = compositor.build_audio_graph(clips, 100.0, 106.0, level_tracks=True)
+    assert "[0:a]aresample=48000,asetpts=PTS-STARTPTS,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[a0]" in script
+
+
 def test_audio_mix_uses_longest_n_tracks():
     clips = [_clip(i, float(10 + i)) for i in range(12)]  # 10s..21s
     picked = compositor.select_mix_clips(clips, 10)
