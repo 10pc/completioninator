@@ -1244,6 +1244,16 @@ def _cmd_compose_grid(args, cfg) -> int:
             seg_paths[i] = workdir / "grid" / f"seg-{i:03d}.mp4"
             if not seg_paths[i].exists():
                 raise GridError(f"danser-grid missing output for seg-{i:03d}")
+        # Hits bed: per-span mixer output (hitsounds timed to gameplay),
+        # concatenated like the video. Missing span audio degrades to
+        # silence (never a hole, never a failure).
+        hits_tmp = workdir / "hits.m4a"
+        compositor.concat_span_hits(
+            ffmpeg, workdir / "grid",
+            [f"seg-{i:03d}" for i in range(len(timeline))],
+            {f"seg-{i:03d}": s.length for i, s in enumerate(timeline)},
+            hits_tmp, workdir,
+            min(600, cfg.compose_timeout))
         failed_manifest = workdir / "grid" / "grid-failed.json"
         if failed_manifest.exists():
             try:
@@ -1289,12 +1299,13 @@ def _cmd_compose_grid(args, cfg) -> int:
             outro_path.unlink(missing_ok=True)
         audio_script, has_audio = compositor.build_audio_graph(
             kept, content_len, total_len, max_tracks=cfg.audio_max_tracks,
-            level_tracks=True)
+            level_tracks=True, hits_path=hits_tmp)
         if has_audio:
             (workdir / "audio.txt").write_text(audio_script)
             compositor.encode_audio_mix(ffmpeg, kept, workdir / "audio.txt", audio_tmp,
                                         min(max(300, int(total_len)), cfg.compose_timeout),
-                                        max_tracks=cfg.audio_max_tracks)
+                                        max_tracks=cfg.audio_max_tracks,
+                                        hits_path=hits_tmp)
             compositor.mux_audio_video(ffmpeg, video_tmp, audio_tmp, out_path)
         else:
             compositor.mux_audio_video(ffmpeg, video_tmp, None, out_path)

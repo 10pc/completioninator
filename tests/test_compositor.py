@@ -298,6 +298,46 @@ def test_audio_graph_levels_grid_only():
     assert "[0:a]aresample=48000,asetpts=PTS-STARTPTS,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[a0]" in script
 
 
+def test_audio_graph_hits_bed_joins_mix(tmp_path):
+    clips = [_clip(1, 100.0)]
+    hits = tmp_path / "hits.m4a"
+    hits.write_bytes(b"hits")
+    script, ok = compositor.build_audio_graph(
+        clips, 100.0, 106.0, hits_path=hits)
+    assert ok is True
+    assert "[1:a]aresample=48000,asetpts=PTS-STARTPTS[a1]" in script
+    assert "amix=inputs=2" in script
+    # hits-only bed still mixes (no voiced clips at all)
+    mute = [_clip(1, 10.0)]
+    mute[0].has_audio = False
+    script, ok = compositor.build_audio_graph(
+        mute, 10.0, 16.0, hits_path=hits)
+    assert ok is True and "amix=inputs=1" not in script and "[aout]" in script
+
+
+def test_audio_mix_appends_hits_input(tmp_path, monkeypatch):
+    import subprocess
+
+    seen = {}
+
+    def _fake_run(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    clips = [_clip(1, 40.0)]
+    graph = tmp_path / "g.txt"
+    graph.write_text("graph")
+    hits = tmp_path / "hits.m4a"
+    hits.write_bytes(b"hits")
+    compositor.encode_audio_mix("ffmpeg", clips, graph, tmp_path / "a.m4a",
+                                60, hits_path=hits)
+    cmd = seen["cmd"]
+    assert cmd[-3:] == ["-ar", "48000", str(tmp_path / "a.m4a")]
+    inputs = [cmd[i + 1] for i, c in enumerate(cmd) if c == "-i"]
+    assert inputs[-1] == str(hits)  # hits bed appends after music tracks
+
+
 def test_audio_mix_uses_longest_n_tracks():
     clips = [_clip(i, float(10 + i)) for i in range(12)]  # 10s..21s
     picked = compositor.select_mix_clips(clips, 10)

@@ -418,8 +418,39 @@ def select_mix_clips(clips: list[Clip], max_tracks: int) -> list[Clip]:
     return voiced if max_tracks <= 0 else voiced[:max_tracks]
 
 
+def concat_span_hits(ffmpeg: str, grid_dir: Path, span_names: list[str],
+                     span_lengths: dict, out_path: Path, workdir: Path,
+                     timeout: int = 300) -> None:
+    """Concat per-span hits beds (danser-grid mixer output) into one track.
+
+    Spans missing their audio file get matching silence instead of failing
+    the batch (or worse: shifting everything after them early). The bed
+    covers content spans only; the outro pads with silence via the mix.
+    """
+    parts = []
+    for i, name in enumerate(span_names):
+        found = sorted(grid_dir.glob(f"{name}.audio.*"))
+        seg = workdir / f"hits-{i:03d}.m4a"
+        if found:
+            shutil.copyfile(found[0], seg)
+        else:
+            dur = max(0.1, float(span_lengths.get(name, 1.0)))
+            log.warning("hits audio missing for %s; substituting %.1fs silence", name, dur)
+            cmd = ["ffmpeg", "-y", "-v", "error",
+                   "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                   "-t", f"{dur:.3f}", "-c:a", "aac", str(seg)]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+        parts.append(seg)
+    lst = workdir / "hits-concat.txt"
+    lst.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))
+    cmd = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+           "-i", str(lst), "-c", "copy", str(out_path)]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+
+
 def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
-                      max_tracks: int = 10, level_tracks: bool = False) -> tuple[str, bool]:
+                      max_tracks: int = 10, level_tracks: bool = False,
+                      hits_path: Path | None = None) -> tuple[str, bool]:
     """One continuous mix of the longest voiced clips (full timeline, no seeks).
 
     Finished clips fall silent as their inputs end, so the mix naturally
@@ -431,7 +462,8 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
     gain-staged. Grid-only; legacy sound is untouched.
     """
     voiced = select_mix_clips(clips, max_tracks)
-    if not voiced:
+    n_hits = 1 if hits_path is not None else 0
+    if not voiced and not n_hits:
         return "", False
     chains = []
     for i, c in enumerate(voiced):
@@ -444,14 +476,18 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
         # sees uniform inputs.
         level = ",loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000" if level_tracks else ""
         chains.append(f"[{i}:a]{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}{level}[a{i}]")
-    if len(voiced) == 1:
+    if n_hits:
+        idx = len(voiced)
+        chains.append(f"[{idx}:a]aresample=48000,asetpts=PTS-STARTPTS[a{idx}]")
+    n_inputs = len(voiced) + n_hits
+    if n_inputs == 1:
         chains.append("[a0]anull[amix]")
     else:
-        labels = "".join(f"[a{i}]" for i in range(len(voiced)))
+        labels = "".join(f"[a{i}]" for i in range(n_inputs))
         # normalize=0 keeps the stacked wall loud (normalize=1 divides by the
         # track count and comes out as quiet static); alimiter only catches
         # digital clipping without leveling the mix down.
-        chains.append(f"{labels}amix=inputs={len(voiced)}:duration=longest:normalize=0[amixed]")
+        chains.append(f"{labels}amix=inputs={n_inputs}:duration=longest:normalize=0[amixed]")
         chains.append("[amixed]alimiter=limit=0.95[amix]")
     tail = f",afade=t=out:st={max(0.0, content_len - 2):.3f}:d=2" if content_len > 2 else ""
     chains.append(f"[amix]aformat=sample_rates=48000:channel_layouts=stereo{tail},"
@@ -460,18 +496,21 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
 
 
 def encode_audio_mix(ffmpeg: str, clips: list[Clip], graph_file: Path,
-                     out_path: Path, timeout: int, max_tracks: int = 10) -> None:
+                     out_path: Path, timeout: int, max_tracks: int = 10,
+                     hits_path: Path | None = None) -> None:
     voiced = select_mix_clips(clips, max_tracks)
     cmd = ["ffmpeg", "-y", "-v", "error"]
     for c in voiced:
         if c.audio_offset > 0:
             cmd += ["-ss", f"{c.audio_offset:.3f}"]
         cmd += ["-i", str(c.path)]
+    if hits_path is not None:
+        cmd += ["-i", str(hits_path)]
     cmd += ["-filter_complex_script", str(graph_file),
             "-map", "[aout]", "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
             str(out_path)]
-    log.info("encoding full-timeline audio mix (%d tracks): %s",
-             len(voiced),
+    log.info("encoding full-timeline audio mix (%d tracks%s): %s",
+             len(voiced), " + hits" if hits_path is not None else "",
              [(round(c.audio_rate, 3), round(c.audio_delay, 3)) for c in voiced])
     subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
 

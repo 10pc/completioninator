@@ -246,6 +246,8 @@ def test_compose_grid_live_morphs(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setattr(comp_mod, "concat_segments",
                         lambda ffmpeg, segs, out_path, workdir, timeout=600:
                         Path(out_path).write_bytes(b"joined"))
+    monkeypatch.setattr(comp_mod, "concat_span_hits",
+                        lambda *a, **k: Path(a[4]).write_bytes(b"hits"))
     monkeypatch.setattr(comp_mod, "encode_grid_finish",
                         lambda *a, **k: Path(a[3]).write_bytes(b"finished"))
     monkeypatch.setattr(comp_mod, "encode_audio_mix",
@@ -432,7 +434,10 @@ def test_compose_grid_happy_path(tmp_path: Path, monkeypatch, capsys):
     def _finish(ffmpeg, src, graph, out_path, fps, preset, crf, timeout=600):
         Path(out_path).write_bytes(b"finished")
 
-    def _mix(ffmpeg, clips, graph, out_path, timeout, max_tracks=10):
+    def _hits(ffmpeg, grid_dir, span_names, span_lengths, out_path, workdir, timeout=300):
+        Path(out_path).write_bytes(b"hits")
+
+    def _mix(ffmpeg, clips, graph, out_path, timeout, max_tracks=10, **k):
         Path(out_path).write_bytes(b"mix")
 
     def _mux(ffmpeg, video, audio, out_path, timeout=600):
@@ -443,6 +448,13 @@ def test_compose_grid_happy_path(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setattr(comp_mod, "encode_outro", _outro)
     monkeypatch.setattr(comp_mod, "concat_segments", _concat)
     monkeypatch.setattr(comp_mod, "encode_grid_finish", _finish)
+    hits_seen = {}
+
+    def _hits(ffmpeg, grid_dir, span_names, span_lengths, out_path, workdir, timeout=300):
+        hits_seen["names"] = list(span_names)
+        Path(out_path).write_bytes(b"hits")
+
+    monkeypatch.setattr(comp_mod, "concat_span_hits", _hits)
     monkeypatch.setattr(comp_mod, "encode_audio_mix", _mix)
     monkeypatch.setattr(comp_mod, "mux_audio_video", _mux)
     # final verification probe
