@@ -1299,7 +1299,7 @@ def _cmd_compose_grid(args, cfg) -> int:
             outro_path.unlink(missing_ok=True)
         audio_script, has_audio = compositor.build_audio_graph(
             kept, content_len, total_len, max_tracks=cfg.audio_max_tracks,
-            level_tracks=True, hits_path=hits_tmp)
+            level_tracks=True, hits_path=hits_tmp, fade_in=2.0)
         if has_audio:
             (workdir / "audio.txt").write_text(audio_script)
             compositor.encode_audio_mix(ffmpeg, kept, workdir / "audio.txt", audio_tmp,

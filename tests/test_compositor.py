@@ -304,6 +304,14 @@ def test_audio_graph_levels_grid_only():
     assert "[0:a]aresample=48000,asetpts=PTS-STARTPTS,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[a0]" in script
 
 
+def test_audio_graph_fade_in():
+    clips = [_clip(1, 100.0)]
+    script, _ = compositor.build_audio_graph(clips, 100.0, 106.0)
+    assert "afade=t=in" not in script
+    script, _ = compositor.build_audio_graph(clips, 100.0, 106.0, fade_in=2.0)
+    assert "[amix]afade=t=in:st=0:d=2.000,aformat" in script
+
+
 def test_audio_graph_hits_bed_joins_mix(tmp_path):
     clips = [_clip(1, 100.0)]
     hits = tmp_path / "hits.m4a"

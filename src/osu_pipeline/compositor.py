@@ -457,7 +457,8 @@ def concat_span_hits(ffmpeg: str, grid_dir: Path, span_names: list[str],
 
 def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
                       max_tracks: int = 10, level_tracks: bool = False,
-                      hits_path: Path | None = None) -> tuple[str, bool]:
+                      hits_path: Path | None = None,
+                      fade_in: float = 0.0) -> tuple[str, bool]:
     """One continuous mix of the longest voiced clips (full timeline, no seeks).
 
     Finished clips fall silent as their inputs end, so the mix naturally
@@ -497,7 +498,8 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
         chains.append(f"{labels}amix=inputs={n_inputs}:duration=longest:normalize=0[amixed]")
         chains.append("[amixed]alimiter=limit=0.95[amix]")
     tail = f",afade=t=out:st={max(0.0, content_len - 2):.3f}:d=2" if content_len > 2 else ""
-    chains.append(f"[amix]aformat=sample_rates=48000:channel_layouts=stereo{tail},"
+    head = f"afade=t=in:st=0:d={fade_in:.3f}," if fade_in > 0 else ""
+    chains.append(f"[amix]{head}aformat=sample_rates=48000:channel_layouts=stereo{tail},"
                   f"apad=whole_dur={total_len:.3f}[aout]")
     return ";\n".join(chains) + "\n", True
 
