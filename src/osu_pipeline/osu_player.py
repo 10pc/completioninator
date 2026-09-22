@@ -18,6 +18,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _API = "https://osu.ppy.sh/api/v2"
+_OAUTH = "https://osu.ppy.sh/oauth/token"
 
 
 class PlayerError(Exception):
@@ -90,7 +91,7 @@ def fetch_player(username: str, client_id: str, client_secret: str,
     """OAuth client-credentials -> user lookup. Raises PlayerError."""
     if not client_id or not client_secret:
         raise PlayerError("osu API client not configured")
-    token = _post_json(f"{_API}/oauth/token", {
+    token = _post_json(_OAUTH, {
         "client_id": client_id,
         "client_secret": client_secret,
         "grant_type": "client_credentials",
