@@ -430,23 +430,29 @@ def concat_span_hits(ffmpeg: str, grid_dir: Path, span_names: list[str],
                      timeout: int = 300) -> None:
     """Concat per-span hits beds (danser-grid mixer output) into one track.
 
-    Spans missing their audio file get matching silence instead of failing
-    the batch (or worse: shifting everything after them early). The bed
-    covers content spans only; the outro pads with silence via the mix.
+    Every span audio is re-timed to its EXACT plan length (-t trim + apad):
+    AAC priming/padding adds ~1 frame per file, which concat-copy would
+    accumulate into seconds of drift over dozens of spans (worst at the
+    end of the video). Missing span audio degrades to silence (never a
+    hole, never a failure). The bed covers content spans only; the outro
+    pads with silence via the mix.
     """
     parts = []
     for i, name in enumerate(span_names):
-        found = sorted(grid_dir.glob(f"{name}.audio.*"))
+        dur = max(0.1, float(span_lengths.get(name, 1.0)))
         seg = workdir / f"hits-{i:03d}.m4a"
+        found = sorted(grid_dir.glob(f"{name}.audio.*"))
         if found:
-            shutil.copyfile(found[0], seg)
+            cmd = ["ffmpeg", "-y", "-v", "error",
+                   "-ss", "0", "-t", f"{dur:.3f}", "-i", str(found[0]),
+                   "-af", f"apad=whole_dur={dur:.3f}",
+                   "-c:a", "aac", str(seg)]
         else:
-            dur = max(0.1, float(span_lengths.get(name, 1.0)))
             log.warning("hits audio missing for %s; substituting %.1fs silence", name, dur)
             cmd = ["ffmpeg", "-y", "-v", "error",
                    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
                    "-t", f"{dur:.3f}", "-c:a", "aac", str(seg)]
-            subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+        subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
         parts.append(seg)
     lst = workdir / "hits-concat.txt"
     lst.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))

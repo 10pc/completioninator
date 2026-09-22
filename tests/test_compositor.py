@@ -335,7 +335,7 @@ def test_audio_mix_appends_hits_input(tmp_path, monkeypatch):
     seen = {}
 
     def _fake_run(cmd, **kwargs):
-        seen["cmd"] = list(cmd)
+        seen.setdefault("cmds", []).append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
@@ -346,10 +346,42 @@ def test_audio_mix_appends_hits_input(tmp_path, monkeypatch):
     hits.write_bytes(b"hits")
     compositor.encode_audio_mix("ffmpeg", clips, graph, tmp_path / "a.m4a",
                                 60, hits_path=hits)
-    cmd = seen["cmd"]
+    cmd = seen["cmds"][0]
     assert cmd[-3:] == ["-ar", "48000", str(tmp_path / "a.m4a")]
     inputs = [cmd[i + 1] for i, c in enumerate(cmd) if c == "-i"]
     assert inputs[-1] == str(hits)  # hits bed appends after music tracks
+
+
+def test_span_hits_retimed_exact(tmp_path, monkeypatch):
+    import subprocess
+
+    seen = {}
+
+    def _fake_run(cmd, **kwargs):
+        seen.setdefault("cmds", []).append(list(cmd))
+        for i, c in enumerate(cmd[:-1]):
+            if c == "-t" and cmd[i + 1] == "61.500":
+                pass
+        out = Path(cmd[-1])
+        if str(out).endswith(".m4a"):
+            out.write_bytes(b"seg")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    grid = tmp_path / "grid"
+    grid.mkdir()
+    (grid / "seg-000.audio.mp4").write_bytes(b"audio")
+    compositor.concat_span_hits("ffmpeg", grid, ["seg-000", "seg-001"],
+                                {"seg-000": 61.5, "seg-001": 2.0},
+                                tmp_path / "hits.m4a", tmp_path)
+    per_span = seen["cmds"][0]
+    # found audio is re-timed to the exact plan length (kills AAC priming
+    # accumulation across dozens of spans)
+    assert "-t" in per_span and "61.500" in per_span
+    assert "apad=whole_dur=61.500" in " ".join(per_span)
+    synth = seen["cmds"][1]
+    assert "anullsrc" in " ".join(synth) and "2.000" in synth
+    assert "-f" in seen["cmds"][2]  # final concat pass
 
 
 def test_audio_mix_uses_longest_n_tracks():
