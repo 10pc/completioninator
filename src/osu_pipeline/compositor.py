@@ -534,9 +534,11 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
         level = ",loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000" if level_tracks else ""
         # Mute past the tile's last video presence (quantized plan ends
         # early; raw durations would ring up to 0.5s past the picture).
+        # enable=gte: silence applies AFTER the end (lte would mute the
+        # whole track and blast the tail — the exact inverse).
         gate = ""
         if c.audio_end > 0:
-            gate = f",volume=enable='lte(t,{c.audio_end:.3f})':volume=0"
+            gate = f",volume=enable='gte(t,{c.audio_end:.3f})':volume=0"
         chains.append(f"[{i}:a]{trim}{tempo}aresample=48000,asetpts=PTS-STARTPTS{delay}{level}{gate}[a{i}]")
     if n_hits:
         idx = len(voiced)

@@ -466,7 +466,9 @@ def test_clip_end_times_and_gate():
     assert ends[2] <= 30.0 and ends[1] >= ends[2]
     b.audio_end = ends[2]
     script, _ = compositor.build_audio_graph([a, b], 60.0, 66.0)
-    assert "volume=enable='lte(t,%.3f)':volume=0" % ends[2] in script
+    # gate mutes AFTER the tile's end (gte), never during it
+    assert "volume=enable='gte(t,%.3f)':volume=0" % ends[2] in script
+    assert "lte(t," not in script
     script, _ = compositor.build_audio_graph([_clip(1, 60.0)], 60.0, 66.0)
     assert "volume=enable" not in script
 
