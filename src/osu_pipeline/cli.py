@@ -1000,7 +1000,7 @@ def _grid_overlay_blocks(cfg, workdir, ok_rows, user_of, header_line, comp_stats
     if not users:
         return header, outro, None
     username = users[0]
-    rank, country, avatar, banner = "", "", "", ""
+    rank, country, avatar, banner, flag = "", "", "", "", ""
     try:
         profile = osu_player.fetch_player(
             username, cfg.osu_client_id, cfg.osu_client_secret)
@@ -1013,6 +1013,13 @@ def _grid_overlay_blocks(cfg, workdir, ok_rows, user_of, header_line, comp_stats
         except osu_player.PlayerError as exc:
             print(f"avatar unavailable ({exc}); text-only card")
         try:
+            if profile.flag_url:
+                dest = workdir / "flag.png"
+                osu_player.download_avatar(profile.flag_url, dest)
+                flag = str(dest)
+        except osu_player.PlayerError as exc:
+            print(f"flag unavailable ({exc}); text code fallback")
+        try:
             if profile.cover_url:
                 dest = workdir / "plate.png"
                 osu_player.prepare_plate(profile.cover_url, dest, 640, 240)
@@ -1022,7 +1029,7 @@ def _grid_overlay_blocks(cfg, workdir, ok_rows, user_of, header_line, comp_stats
     except osu_player.PlayerError as exc:
         print(f"player profile unavailable ({exc}); text-only card")
     player = {"username": username, "rank": rank, "country": country,
-              "avatar": avatar, "banner": banner}
+              "avatar": avatar, "banner": banner, "flag": flag}
     return header, outro, player
 
 

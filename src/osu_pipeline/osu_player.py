@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 
 _API = "https://osu.ppy.sh/api/v2"
 _OAUTH = "https://osu.ppy.sh/oauth/token"
+# Official osu! flag set (public static, no auth): 2-letter code -> PNG.
+_FLAGS = "https://assets.ppy.sh/old-flags"
 
 
 class PlayerError(Exception):
@@ -37,6 +39,14 @@ class PlayerProfile:
     @property
     def avatar_fallback_url(self) -> str:
         return f"https://a.ppy.sh/{self.user_id}"
+
+    @property
+    def flag_url(self) -> str:
+        """Official flag PNG for the card ("ID" -> .../ID.png, "" when unknown)."""
+        code = (self.country or "").strip().upper()
+        if len(code) != 2 or not code.isalpha():
+            return ""
+        return f"{_FLAGS}/{code}.png"
 
 
 def _post_json(url: str, data: dict, timeout: int) -> dict:

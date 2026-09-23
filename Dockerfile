@@ -1,12 +1,12 @@
 # Milestone 2: headless danser rendering (Xvfb + Mesa llvmpipe, CPU-only).
 # danser binary is baked in from a pinned upstream release.
 ARG DANSER_VERSION=0.11.0
-# danser-grid fork ref (master carries the grid MVP; pin a tag at cutover).
-ARG DANSER_GRID_REF=master
+# danser-grid fork ref (pinned tag since cutover; master for development).
+ARG DANSER_GRID_REF=v0.11.0-grid.5
 
 # ---- grid builder: danser-grid binary from the fork ----
 FROM golang:1.24-bookworm AS gridbuilder
-ARG DANSER_GRID_REF=master
+ARG DANSER_GRID_REF=v0.11.0-grid.5
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         libgl1-mesa-dev \
@@ -16,8 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         git \
     && rm -rf /var/lib/apt/lists/*
-# Bust the clone cache whenever the branch moves (else Docker reuses a stale fork).
-ADD https://api.github.com/repos/10pc/danser-grid/commits/${DANSER_GRID_REF} /tmp/grid-ref.json
+# Bust the clone cache whenever the pinned ref moves (tags are immutable,
+# so any byte change here means a new tag). NOTE: ref/tags path only
+# resolves tags; switch back to .../commits/${REF} if floating on a branch.
+ADD https://api.github.com/repos/10pc/danser-grid/git/ref/tags/${DANSER_GRID_REF} /tmp/grid-ref.json
 RUN git clone --depth 1 --branch ${DANSER_GRID_REF} https://github.com/10pc/danser-grid.git /src
 WORKDIR /src
 RUN go build -buildvcs=false -tags "exclude_cimgui_glfw exclude_cimgui_sdli" \
