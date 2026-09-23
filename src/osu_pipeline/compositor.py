@@ -418,15 +418,22 @@ def build_morph_graph(span: MorphSpan, clips_by_id: dict, width: int, grid_h: in
     return ";\n".join(chains) + "\n", ordered
 
 
-def select_mix_clips(clips: list[Clip], max_tracks: int) -> list[Clip]:
-    """Voiced clips for the audio mix, longest first, capped at max_tracks.
+def select_mix_clips(clips: list[Clip], max_tracks: int,
+                     priority_ids: set | frozenset = frozenset()) -> list[Clip]:
+    """Voiced clips for the audio mix, capped at max_tracks.
 
-    Stacking all ~100 walls is pure CPU burn for mud; the longest maps carry
-    the video anyway (they span the most segments). max_tracks <= 0 mixes all.
+    Priority ids (tiles exposed in small spans, e.g. the solo finale)
+    come first so they are never muted by the duration ranking; the rest
+    fills longest-first. Stacking all ~100 walls is pure CPU burn for mud;
+    the longest maps carry the video anyway. max_tracks <= 0 mixes all.
     """
     voiced = [c for c in clips if c.has_audio]
-    voiced.sort(key=lambda c: c.duration, reverse=True)
-    return voiced if max_tracks <= 0 else voiced[:max_tracks]
+    prio = [c for c in voiced if c.id in priority_ids]
+    prio.sort(key=lambda c: c.duration, reverse=True)
+    rest = [c for c in voiced if c.id not in priority_ids]
+    rest.sort(key=lambda c: c.duration, reverse=True)
+    ordered = prio + rest
+    return ordered if max_tracks <= 0 else ordered[:max_tracks]
 
 
 def clip_end_times(timeline: list) -> dict:
@@ -451,36 +458,39 @@ def concat_span_hits(ffmpeg: str, grid_dir: Path, span_names: list[str],
                      timeout: int = 300) -> None:
     """Concat per-span hits beds (danser-grid mixer output) into one track.
 
-    Every span audio is re-timed to its EXACT plan length (-t trim + apad):
-    AAC priming/padding adds ~1 frame per file, which concat-copy would
-    accumulate into seconds of drift over dozens of spans (worst at the
-    end of the video). Missing span audio degrades to silence (never a
-    hole, never a failure). The bed covers content spans only; the outro
-    pads with silence via the mix.
+    Every span audio is re-timed to its EXACT plan length (-t trim + apad)
+    into a WAV intermediate, then joined with ONE final AAC encode. AAC
+    intermediates are banned here: each carries encoder priming (~44ms)
+    and frame-grid length quantization (~21ms), which concat stacks into
+    seconds of drift over dozens of spans (worst at the end of the video).
+    PCM has neither, so per-file error is zero and the bed stays
+    sample-locked to the picture. Missing span audio degrades to silence
+    (never a hole, never a failure). The bed covers content spans only;
+    the outro pads with silence via the mix.
     """
     parts = []
     for i, name in enumerate(span_names):
         dur = max(0.1, float(span_lengths.get(name, 1.0)))
-        seg = workdir / f"hits-{i:03d}.m4a"
+        seg = workdir / f"hits-{i:03d}.wav"
         found = sorted(grid_dir.glob(f"{name}.audio.*"))
         if found:
             cmd = ["ffmpeg", "-y", "-v", "error",
                    "-ss", "0", "-t", f"{dur:.3f}", "-i", str(found[0]),
                    "-af", f"apad=whole_dur={dur:.3f}",
-                   "-c:a", "aac", str(seg)]
+                   "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(seg)]
         else:
             log.warning("hits audio missing for %s; substituting %.1fs silence", name, dur)
             cmd = ["ffmpeg", "-y", "-v", "error",
                    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-                   "-t", f"{dur:.3f}", "-c:a", "aac", str(seg)]
+                   "-t", f"{dur:.3f}", "-c:a", "pcm_s16le", "-ar", "48000",
+                   "-ac", "2", str(seg)]
         subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
         parts.append(seg)
     lst = workdir / "hits-concat.txt"
     lst.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))
-    # Re-encode (NOT -c copy): decoding applies each segment's edit list,
-    # so per-file AAC priming (~21ms) cannot accumulate into seconds of
-    # drift across dozens of spans. Copy-concat strings raw payloads and
-    # stacks every file's priming end to end.
+    # Single AAC encode at the end: decoding WAV applies no priming, so
+    # nothing accumulates across dozens of spans. (The old -c copy / AAC
+    # intermediates stacked every file's priming end to end.)
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
            "-i", str(lst), "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
            str(out_path)]
@@ -490,7 +500,8 @@ def concat_span_hits(ffmpeg: str, grid_dir: Path, span_names: list[str],
 def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
                       max_tracks: int = 10, level_tracks: bool = False,
                       hits_path: Path | None = None,
-                      fade_in: float = 0.0) -> tuple[str, bool]:
+                      fade_in: float = 0.0,
+                      priority_ids: set | frozenset = frozenset()) -> tuple[str, bool]:
     """One continuous mix of the longest voiced clips (full timeline, no seeks).
 
     Finished clips fall silent as their inputs end, so the mix naturally
@@ -501,7 +512,7 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
     carry wildly different masters, while danser-recorded clip audio arrives
     gain-staged. Grid-only; legacy sound is untouched.
     """
-    voiced = select_mix_clips(clips, max_tracks)
+    voiced = select_mix_clips(clips, max_tracks, priority_ids)
     n_hits = 1 if hits_path is not None else 0
     if not voiced and not n_hits:
         return "", False
@@ -549,8 +560,9 @@ def build_audio_graph(clips: list[Clip], content_len: float, total_len: float,
 
 def encode_audio_mix(ffmpeg: str, clips: list[Clip], graph_file: Path,
                      out_path: Path, timeout: int, max_tracks: int = 10,
-                     hits_path: Path | None = None) -> None:
-    voiced = select_mix_clips(clips, max_tracks)
+                     hits_path: Path | None = None,
+                     priority_ids: set | frozenset = frozenset()) -> None:
+    voiced = select_mix_clips(clips, max_tracks, priority_ids)
     cmd = ["ffmpeg", "-y", "-v", "error"]
     # No input -ss here: seeks live in-filter (atrim, sample-accurate).
     for c in voiced:
@@ -562,7 +574,7 @@ def encode_audio_mix(ffmpeg: str, clips: list[Clip], graph_file: Path,
             str(out_path)]
     log.info("encoding full-timeline audio mix (%d tracks%s): %s",
              len(voiced), " + hits" if hits_path is not None else "",
-             [(round(c.audio_rate, 3), round(c.audio_delay, 3)) for c in voiced])
+             [(c.id, round(c.audio_rate, 3), round(c.audio_delay, 3)) for c in voiced])
     subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
 
 

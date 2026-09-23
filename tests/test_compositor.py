@@ -384,7 +384,7 @@ def test_span_hits_retimed_exact(tmp_path, monkeypatch):
             if c == "-t" and cmd[i + 1] == "61.500":
                 pass
         out = Path(cmd[-1])
-        if str(out).endswith(".m4a"):
+        if str(out).endswith((".m4a", ".wav")):
             out.write_bytes(b"seg")
         return subprocess.CompletedProcess(cmd, 0)
 
@@ -396,17 +396,22 @@ def test_span_hits_retimed_exact(tmp_path, monkeypatch):
                                 {"seg-000": 61.5, "seg-001": 2.0},
                                 tmp_path / "hits.m4a", tmp_path)
     per_span = seen["cmds"][0]
-    # found audio is re-timed to the exact plan length (kills AAC priming
-    # accumulation across dozens of spans)
+    # found audio is re-timed to the exact plan length into a WAV
+    # intermediate: AAC intermediates stack priming + frame quantization
+    # into seconds of drift over dozens of spans
     assert "-t" in per_span and "61.500" in per_span
     assert "apad=whole_dur=61.500" in " ".join(per_span)
+    assert "pcm_s16le" in per_span
+    assert str(per_span[-1]).endswith(".wav")
     synth = seen["cmds"][1]
     assert "anullsrc" in " ".join(synth) and "2.000" in synth
+    assert "pcm_s16le" in synth
     final = seen["cmds"][2]
     assert "-f" in final and "concat" in final
-    # final join re-encodes: copy-concat would stack per-file AAC priming
+    # single AAC encode at the end, never a copy-concat of lossy parts
     assert "-c" not in final or "copy" not in final
     assert "aac" in final
+    assert str(final[-1]).endswith(".m4a")
 
 
 def test_audio_mix_uses_longest_n_tracks():
@@ -422,6 +427,23 @@ def test_audio_mix_uses_longest_n_tracks():
     # opt-out mixes everything, as before
     script_all, _ = compositor.build_audio_graph(clips, 21.0, 27.0, max_tracks=0)
     assert "amix=inputs=12" in script_all
+
+
+def test_select_mix_prioritizes_small_span_tiles():
+    clips = [_clip(i, float(10 + i)) for i in range(12)]  # 10s..21s
+    # id 0 is the shortest (10s) but exposed in a small span: it must beat
+    # longer unexposed tiles into the capped mix.
+    picked = compositor.select_mix_clips(clips, 10, priority_ids={0})
+    assert picked[0].id == 0
+    assert len(picked) == 10
+    assert [c.id for c in picked[1:]] == [11, 10, 9, 8, 7, 6, 5, 4, 3]
+    # priority longer than the cap still caps
+    picked_all = compositor.select_mix_clips(clips, 10, priority_ids=set(range(12)))
+    assert len(picked_all) == 10
+    # priority flows into the graph wiring
+    script, _ = compositor.build_audio_graph(clips, 21.0, 27.0, max_tracks=10,
+                                             priority_ids={0})
+    assert "amix=inputs=10" in script
 
 
 def test_outro_graph_text_fades():

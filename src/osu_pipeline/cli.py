@@ -1302,15 +1302,27 @@ def _cmd_compose_grid(args, cfg) -> int:
         ends = compositor.clip_end_times(timeline)
         for c in kept:
             c.audio_end = ends.get(c.id, 0.0)
+        # Tiles exposed in small spans (duets, trios, the solo finale)
+        # must stay audible even when they aren't among the longest:
+        # duration ranking alone mutes exactly the tiles you watch.
+        priority_ids = set()
+        for span_item in timeline:
+            members = ([t.clip_id for t in span_item.tiles]
+                       if isinstance(span_item, compositor.MorphSpan)
+                       else [c.id for c in span_item.active])
+            if 0 < len(members) <= 3:
+                priority_ids.update(members)
         audio_script, has_audio = compositor.build_audio_graph(
             kept, content_len, total_len, max_tracks=cfg.audio_max_tracks,
-            level_tracks=True, hits_path=hits_tmp, fade_in=2.0)
+            level_tracks=True, hits_path=hits_tmp, fade_in=2.0,
+            priority_ids=priority_ids)
         if has_audio:
             (workdir / "audio.txt").write_text(audio_script)
             compositor.encode_audio_mix(ffmpeg, kept, workdir / "audio.txt", audio_tmp,
                                         min(max(300, int(total_len)), cfg.compose_timeout),
                                         max_tracks=cfg.audio_max_tracks,
-                                        hits_path=hits_tmp)
+                                        hits_path=hits_tmp,
+                                        priority_ids=priority_ids)
             compositor.mux_audio_video(ffmpeg, video_tmp, audio_tmp, out_path)
         else:
             compositor.mux_audio_video(ffmpeg, video_tmp, None, out_path)
