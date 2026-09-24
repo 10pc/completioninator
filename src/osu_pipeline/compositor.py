@@ -576,8 +576,50 @@ def encode_audio_mix(ffmpeg: str, clips: list[Clip], graph_file: Path,
             str(out_path)]
     log.info("encoding full-timeline audio mix (%d tracks%s): %s",
              len(voiced), " + hits" if hits_path is not None else "",
-             [(c.id, round(c.audio_rate, 3), round(c.audio_delay, 3)) for c in voiced])
+             [(c.id, round(c.audio_rate, 3), round(c.audio_delay, 3),
+               round(c.audio_end, 1)) for c in voiced])
     subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+
+
+def stem_coverage(clip: Clip, stem_seconds: float) -> float:
+    """Mix seconds this track's song covers: (stem - seek)/rate + delay."""
+    rate = clip.audio_rate or 1.0
+    return max(0.0, (stem_seconds - clip.audio_offset) / rate + clip.audio_delay)
+
+
+def build_mix_manifest(clips: list[Clip], max_tracks: int,
+                       priority_ids: set | frozenset,
+                       stem_seconds: dict,
+                       content_len: float, total_len: float) -> dict:
+    """JSON-serializable record of what went into the mix (persisted per
+    batch next to audio.txt). stem_seconds maps clip id -> probed mp3
+    length (missing = unprobed). Tracks whose song ends before their tile
+    are flagged: that's a map property (song shorter than drain), not a
+    bug, but it reads exactly like a muted track, so it must be on record.
+    """
+    voiced = select_mix_clips(clips, max_tracks, priority_ids)
+    tracks = []
+    for c in voiced:
+        stem = stem_seconds.get(c.id)
+        cover = stem_coverage(c, stem) if stem is not None else None
+        short_by = (round(c.audio_end - cover, 2)
+                    if cover is not None and c.audio_end > cover + 1.0 else 0.0)
+        tracks.append({
+            "id": c.id, "duration": round(c.duration, 3),
+            "rate": c.audio_rate, "offset": round(c.audio_offset, 3),
+            "delay": round(c.audio_delay, 3), "end": round(c.audio_end, 3),
+            "stem": str(c.path), "stem_seconds": stem,
+            "covers_to": round(cover, 3) if cover is not None else None,
+            "short_by": short_by,
+        })
+    return {
+        "content_len": round(content_len, 3),
+        "total_len": round(total_len, 3),
+        "max_tracks": max_tracks,
+        "priority_ids": sorted(priority_ids),
+        "tracks": tracks,
+        "video_only": sorted(c.id for c in clips if not c.has_audio),
+    }
 
 
 def mux_audio_video(ffmpeg: str, video_path: Path, audio_path: Path | None,

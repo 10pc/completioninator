@@ -482,3 +482,46 @@ def test_single_clip_skips_xstack():
     # absolute canvas coords: tile sits below the header, not under it
     assert "pad=1920:1080:80:85:black[vgrid]" in graph
     assert "fade=" not in graph
+
+
+def test_mix_manifest_flags_short_songs():
+    a = _clip(1, 300.0)
+    a.audio_end = 300.0
+    b = _clip(2, 306.0)
+    b.audio_end = 306.0
+    b.has_audio = True
+    m = compositor.build_mix_manifest(
+        [a, b], 10, set(), {1: 300.5, 2: 300.2}, 306.0, 312.0)
+    by_id = {t["id"]: t for t in m["tracks"]}
+    assert by_id[1]["short_by"] == 0.0  # covered
+    assert by_id[2]["short_by"] == 5.8  # 306.0 - 300.2: reads like muted
+    assert m["video_only"] == []
+    assert m["content_len"] == 306.0
+    # unprobed stem: noted, never crashes
+    m2 = compositor.build_mix_manifest([a], 10, set(), {}, 300.0, 306.0)
+    assert m2["tracks"][0]["covers_to"] is None
+    assert m2["tracks"][0]["short_by"] == 0.0
+    # video-only tiles listed for the batch summary
+    c = _clip(3, 10.0)
+    c.has_audio = False
+    m3 = compositor.build_mix_manifest([a, c], 10, set(), {1: 300.5}, 300.0, 306.0)
+    assert m3["video_only"] == [3]
+
+
+def test_stem_coverage_math():
+    c = _clip(1, 100.0)
+    c.audio_offset = 8.0
+    c.audio_rate = 1.5
+    c.audio_delay = 2.0
+    assert compositor.stem_coverage(c, 308.0) == (308.0 - 8.0) / 1.5 + 2.0
+    assert compositor.stem_coverage(c, 5.0) == 0.0  # seek past EOF clamps
+
+
+def test_unique_workdir_never_collides(tmp_path):
+    from osu_pipeline.cli import _unique_workdir
+    base = tmp_path / "compose-2026-09-23"
+    assert _unique_workdir(base) == base and base.is_dir()
+    (base / "audio.txt").write_text("evidence")
+    second = _unique_workdir(base)
+    assert second == tmp_path / "compose-2026-09-23-2"
+    assert (base / "audio.txt").read_text() == "evidence"  # untouched

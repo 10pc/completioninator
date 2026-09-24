@@ -697,8 +697,7 @@ def _cmd_compose(args, cfg) -> int:
     max_clips = args.max_clips or cfg.max_clips
     today = datetime.now(timezone.utc).date().isoformat()
     cfg.daily_dir.mkdir(parents=True, exist_ok=True)
-    workdir = cfg.working_dir / f"compose-{today}"
-    workdir.mkdir(parents=True, exist_ok=True)
+    workdir = _unique_workdir(cfg.working_dir / f"compose-{today}")
 
     database.init_db(db_path)
     conn = database.connect(db_path)
@@ -742,6 +741,9 @@ def _cmd_compose(args, cfg) -> int:
     span = f"{days[0]}..{days[-1]}" if len(days) > 1 else (days[0] if days else None)
     print(f"batch: {len(kept)} clips ({sum(c.duration for c in kept):.0f}s content), "
           f"{len(rolled)} roll forward to next batch")
+    novox = [c.id for c in kept if not c.has_audio]
+    if novox:
+        print(f"batch: {len(novox)} video-only (no mp3), ids={novox}")
 
     # Finale upgrade: the longest clip ends fullscreen, so it alone records
     # at 1080p (one bounded danser job; warn-only on failure).
@@ -881,7 +883,7 @@ def _cmd_compose(args, cfg) -> int:
     for p in workdir.glob("seg-*.txt"):
         p.unlink(missing_ok=True)
     (workdir / "concat.txt").unlink(missing_ok=True)
-    (workdir / "audio.txt").unlink(missing_ok=True)
+    # audio.txt (+ mix-manifest.json) are kept as evidence, not temp.
     (workdir / "seg-outro.txt").unlink(missing_ok=True)
     video_tmp.unlink(missing_ok=True)
     audio_tmp.unlink(missing_ok=True)
@@ -977,6 +979,22 @@ def _grid_outro_seconds(cfg, fallback: float) -> float:
         return fallback
 
 
+def _unique_workdir(base: Path) -> Path:
+    """Batch workdir that never collides: reruns get -2, -3, ... so a new
+    compose can never overwrite (and destroy the evidence of) a previous
+    run's graphs, specs, and mix manifest."""
+    if not base.exists() or not any(base.iterdir()):
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    suffix = 2
+    while True:
+        cand = base.with_name(f"{base.name}-{suffix}")
+        if not cand.exists() or not any(cand.iterdir()):
+            cand.mkdir(parents=True, exist_ok=True)
+            return cand
+        suffix += 1
+
+
 def _grid_overlay_blocks(cfg, workdir, ok_rows, user_of, header_line, comp_stats):
     """Header/outro/player spec blocks; strings computed outside danser-grid.
 
@@ -1052,8 +1070,7 @@ def _cmd_compose_grid(args, cfg) -> int:
     max_clips = args.max_clips or cfg.max_clips
     today = datetime.now(timezone.utc).date().isoformat()
     cfg.daily_dir.mkdir(parents=True, exist_ok=True)
-    workdir = cfg.working_dir / f"compose-{today}"
-    workdir.mkdir(parents=True, exist_ok=True)
+    workdir = _unique_workdir(cfg.working_dir / f"compose-{today}")
 
     database.init_db(db_path)
     conn = database.connect(db_path)
@@ -1166,6 +1183,9 @@ def _cmd_compose_grid(args, cfg) -> int:
     span = f"{days[0]}..{days[-1]}" if len(days) > 1 else (days[0] if days else None)
     print(f"batch: {len(kept)} clips ({sum(c.duration for c in kept):.0f}s content), "
           f"{len(rolled)} roll forward to next batch")
+    novox = [c.id for c in kept if not c.has_audio]
+    if novox:
+        print(f"batch: {len(novox)} video-only (no mp3), ids={novox}")
 
     comp_stats = None
     try:
@@ -1325,6 +1345,27 @@ def _cmd_compose_grid(args, cfg) -> int:
             priority_ids=priority_ids)
         if has_audio:
             (workdir / "audio.txt").write_text(audio_script)
+            # Persist what went into the mix (kept: audio.txt is evidence,
+            # not temp). Stem coverage flags songs shorter than their tile
+            # (reads exactly like a muted track, so it must be on record).
+            voiced = compositor.select_mix_clips(
+                kept, cfg.audio_max_tracks, priority_ids)
+            stems: dict = {}
+            for vc in voiced:
+                try:
+                    probed = compositor.probe_clip(ffprobe, vc.path)
+                    stems[vc.id] = probed.duration if probed else None
+                except Exception:  # noqa: BLE001 - unprobed stem: manifest notes it
+                    stems[vc.id] = None
+            manifest = compositor.build_mix_manifest(
+                kept, cfg.audio_max_tracks, priority_ids, stems,
+                content_len, total_len)
+            (workdir / "mix-manifest.json").write_text(
+                json.dumps(manifest, indent=2))
+            for t in manifest["tracks"]:
+                if t["short_by"]:
+                    print(f"mix: song shorter than tile by {t['short_by']}s "
+                          f"(id={t['id']}, stem={t['stem_seconds']}s, tile={t['end']}s)")
             compositor.encode_audio_mix(ffmpeg, kept, workdir / "audio.txt", audio_tmp,
                                         min(max(300, int(total_len)), cfg.compose_timeout),
                                         max_tracks=cfg.audio_max_tracks,
@@ -1348,7 +1389,7 @@ def _cmd_compose_grid(args, cfg) -> int:
     for p in workdir.glob("seg-*.txt"):
         p.unlink(missing_ok=True)
     (workdir / "concat.txt").unlink(missing_ok=True)
-    (workdir / "audio.txt").unlink(missing_ok=True)
+    # audio.txt (+ mix-manifest.json) are kept as evidence, not temp.
     (workdir / "seg-outro.txt").unlink(missing_ok=True)
     video_tmp.unlink(missing_ok=True)
     audio_tmp.unlink(missing_ok=True)
