@@ -611,6 +611,52 @@ def gc_unreferenced_sets(songs_dir: Path, keep: set[int]) -> dict:
     return stats
 
 
+def unpack_set(songs_dir: Path, beatmapset_id: int) -> Path | None:
+    """Unpack a set's .osz into songs/{id}/ so map metadata AND audio are
+    readable without danser (find_audio_for_hash needs unpacked .osu files;
+    danser only unpacks later, during the record). The zip is deleted after
+    a successful unpack — danser uses pre-unpacked dirs directly, so this
+    halves the transient footprint. Zip-slip hardened (mirror bytes are
+    untrusted): absolute and .. members are skipped. Returns the dir, or
+    None when there is nothing (or nothing usable) to unpack.
+    """
+    import zipfile
+
+    songs_dir = Path(songs_dir)
+    dest_dir = songs_dir / str(beatmapset_id)
+    try:
+        if dest_dir.is_dir() and any(dest_dir.glob("*.osu")):
+            return dest_dir
+    except OSError:
+        return None
+    zpath = songs_dir / f"{beatmapset_id}.osz"
+    if not zpath.is_file():
+        return dest_dir if dest_dir.is_dir() else None
+    try:
+        with zipfile.ZipFile(zpath) as zf:
+            members = [m for m in zf.infolist()
+                       if not m.is_dir() and _safe_member(m.filename)]
+            if not members:
+                return None
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for m in members:
+                (dest_dir / m.filename).write_bytes(zf.read(m.filename))
+    except (OSError, zipfile.BadZipFile) as exc:
+        log.warning("unpack of set %s failed (%s); leaving .osz for danser",
+                    beatmapset_id, exc)
+        return None
+    if any(dest_dir.glob("*.osu")):
+        _silent_unlink(zpath)
+        return dest_dir
+    return None
+
+
+def _safe_member(name: str) -> bool:
+    p = Path(name)
+    return (not p.is_absolute() and not p.drive and ".." not in p.parts
+            and not name.startswith(("/", "\\")))
+
+
 def ensure_beatmap(
     mirror: str,
     beatmap_hash: str | None,
@@ -629,9 +675,9 @@ def ensure_beatmap(
 ) -> tuple[int, Path]:
     """Ensure the .osz for a replay is visible in the Songs dir.
 
-    Downloads land in the cache dir (durable); a copy is staged into Songs
-    because danser deletes .osz files after unpacking. cache_dir defaults to
-    songs_dir (old behavior: re-download after every danser run).
+    Downloads land in the cache dir; a copy is staged into Songs and then
+    unpacked in place (mp3 lookup needs unpacked .osu files, and danser
+    uses pre-unpacked dirs directly). cache_dir defaults to songs_dir.
     fallback2 is a download-only tier (nekoha exposes no checksum lookup),
     tried after the lookup-capable mirrors for bytes only.
     Returns (set_id, Songs .osz path).
@@ -644,7 +690,9 @@ def ensure_beatmap(
         dl_chain.append((fallback2_backend, fallback2_mirror))
     if override_set_id is not None:
         dl = _download_any(dl_chain, override_set_id, cache_path, timeout)
-        return override_set_id, stage_into_songs(dl, songs_path, override_set_id)
+        staged = stage_into_songs(dl, songs_path, override_set_id)
+        unpack_set(songs_path, override_set_id)
+        return override_set_id, staged
     if not beatmap_hash:
         raise BeatmapError("no_beatmap: replay has no beatmap hash (unparseable .osr?)")
     transient_seen = False
@@ -676,4 +724,6 @@ def ensure_beatmap(
         if exc.transient:
             raise BeatmapError(str(exc), transient=True, service_down=True) from exc
         raise
-    return set_id, stage_into_songs(dl, songs_path, set_id)
+    staged = stage_into_songs(dl, songs_path, set_id)
+    unpack_set(songs_path, set_id)
+    return set_id, staged

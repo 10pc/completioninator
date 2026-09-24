@@ -422,3 +422,29 @@ def test_gc_unreferenced_sets(tmp_path):
     assert beatmaps.gc_unreferenced_sets(tmp_path / "nope", set()) == {
         "deleted": 0, "bytes": 0}
     conn.close()
+
+
+def test_unpack_set(tmp_path):
+    import zipfile
+
+    songs = tmp_path / "songs"
+    songs.mkdir()
+    zpath = songs / "99.osz"
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("map.osu", "[General]\nAudioFilename: song.mp3\n")
+        zf.writestr("song.mp3", b"ID3" + b"\x00" * 100)
+        zf.writestr("../evil.osu", "x")
+        zf.writestr("/abs.osu", "x")
+    assert beatmaps.unpack_set(songs, 99) == songs / "99"
+    assert (songs / "99" / "map.osu").exists()
+    assert (songs / "99" / "song.mp3").exists()
+    assert not zpath.exists()  # zip deleted after successful unpack
+    assert not (songs / "evil.osu").exists()
+    # idempotent: already unpacked returns the dir without the zip
+    assert beatmaps.unpack_set(songs, 99) == songs / "99"
+    # missing everything: None
+    assert beatmaps.unpack_set(songs, 100) is None
+    # corrupt zip: None, zip kept for danser to attempt
+    (songs / "101.osz").write_bytes(b"not a zip")
+    assert beatmaps.unpack_set(songs, 101) is None
+    assert (songs / "101.osz").exists()
