@@ -246,6 +246,30 @@ def stop_flag_path(cfg) -> Path:
     return Path(cfg.database_path).parent / "stop-render"
 
 
+def gc_songs_dir(cfg, db_path: Path, conn) -> dict:
+    """Delete beatmap sets no live row needs. The reference universe is the
+    configured production database UNION the compose DB: bench/smoke runs
+    use throwaway copies whose rows must neither doom production sets nor
+    be stranded by a production GC mid-flight. Numeric entries only, never
+    raises (worst case the disk stays full and the guard reports it)."""
+    stats = {"deleted": 0, "bytes": 0}
+    prod = Path(cfg.database_path)
+    try:
+        keep = set(beatmaps.referenced_set_ids(conn))
+        if Path(db_path) != prod:
+            other = database.connect(prod)
+            try:
+                keep |= beatmaps.referenced_set_ids(other)
+            finally:
+                other.close()
+        stats = beatmaps.gc_unreferenced_sets(cfg.songs_dir, keep)
+    except Exception as exc:  # noqa: BLE001 - GC must never fail a batch
+        log.warning("gc failed: %s", exc)
+    print(f"gc: {stats['deleted']} unreferenced set(s) removed, "
+          f"freed {stats['bytes'] / 1e6:.1f} MB")
+    return stats
+
+
 def _fresh_stats() -> dict:
     return {"rendered": 0, "failed": 0, "skipped_disk": 0, "retried": 0, "unrenderable": 0}
 
@@ -960,10 +984,7 @@ def _cmd_compose(args, cfg) -> int:
         database.mark_composited(conn, [c.id for c in kept], today)
         database.record_daily(conn, today, out_path.as_posix(), len(kept),
                               final.duration if final else total, span, snapshot)
-        gc = beatmaps.gc_unreferenced_sets(
-            cfg.songs_dir, beatmaps.referenced_set_ids(conn))
-        print(f"gc: {gc['deleted']} unreferenced set(s) removed, "
-              f"freed {gc['bytes'] / 1e6:.1f} MB")
+        gc_songs_dir(cfg, db_path, conn)
     finally:
         conn.close()
     return 0
@@ -1473,10 +1494,7 @@ def _cmd_compose_grid(args, cfg) -> int:
         database.mark_composited(conn, [c.id for c in kept], today)
         database.record_daily(conn, today, out_path.as_posix(), len(kept),
                               final.duration if final else total, span, snapshot)
-        gc = beatmaps.gc_unreferenced_sets(
-            cfg.songs_dir, beatmaps.referenced_set_ids(conn))
-        print(f"gc: {gc['deleted']} unreferenced set(s) removed, "
-              f"freed {gc['bytes'] / 1e6:.1f} MB")
+        gc_songs_dir(cfg, db_path, conn)
     finally:
         conn.close()
     return 0

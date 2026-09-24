@@ -284,3 +284,43 @@ def test_check_free_space(tmp_path: Path, monkeypatch):
     assert cli_mod.check_free_space(cfg, minimum_gb=0.001) is True
     monkeypatch.setattr(cli_mod, "_free_gb", lambda p: 0.0)
     assert cli_mod.check_free_space(cfg, minimum_gb=5.0) is False
+
+
+def test_gc_uses_union_universe(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from osu_pipeline import cli as cli_mod
+
+    songs = tmp_path / "songs"
+    songs.mkdir()
+    (songs / "111").mkdir()
+    (songs / "111" / "a.osu").write_bytes(b"x")
+    (songs / "222").mkdir()
+    (songs / "222" / "a.osu").write_bytes(b"y")
+    (songs / "333").mkdir()
+    (songs / "333" / "a.osu").write_bytes(b"z")
+
+    def _live_row(db, path, sha, set_id, ready=True):
+        database.init_db(db)
+        conn = database.connect(db)
+        database.insert_replay(conn, path=path, sha256=sha, size=1,
+                                mtime_ns=1, played_at=None, day="d",
+                                beatmap_hash="b")
+        jid = conn.execute("SELECT id FROM replays WHERE path=?", (path,)).fetchone()[0]
+        database.set_beatmap(conn, jid, "b", set_id)
+        if ready:
+            database.mark_ready(conn, jid)
+        return conn
+
+    prod = tmp_path / "prod.sqlite"
+    pc = _live_row(prod, "p.osr", "h1", 111)  # prod-live: kept
+    scratch = tmp_path / "s.sqlite"
+    sc = _live_row(scratch, "s.osr", "h2", 222)  # compose-live: kept
+    # 333 referenced nowhere: collected
+    cfg = SimpleNamespace(songs_dir=songs, database_path=prod)
+    stats = cli_mod.gc_songs_dir(cfg, scratch, sc)
+    assert stats["deleted"] == 1
+    assert (songs / "111").exists() and (songs / "222").exists()
+    assert not (songs / "333").exists()
+    pc.close()
+    sc.close()
