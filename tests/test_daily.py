@@ -236,3 +236,51 @@ def test_pending_upload_day_prefers_latest(tmp_path: Path):
         assert database.pending_upload_day(conn, "youtube") is None
     finally:
         conn.close()
+
+
+def test_prune_old_dailies(tmp_path: Path):
+    from osu_pipeline import cli as cli_mod
+
+    daily = tmp_path / "daily"
+    daily.mkdir()
+    days = [f"2026-09-{i:02d}" for i in range(1, 11)]
+    for d in days:
+        (daily / f"day-{d}.mp4").write_bytes(b"v" * 100)
+    (daily / "notes.txt").write_text("x")
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    try:
+        for d in days:
+            database.mark_uploaded(conn, d, "youtube", "v", "u")
+    finally:
+        conn.close()
+    stats = cli_mod.prune_old_dailies(daily, db, keep_days=7)
+    assert stats["deleted"] == 3 and stats["kept"] == 7
+    assert not (daily / "day-2026-09-01.mp4").exists()
+    assert (daily / "day-2026-09-10.mp4").exists()
+    assert (daily / "notes.txt").exists()  # non-video: never touched
+
+
+def test_prune_spares_unuploaded(tmp_path: Path):
+    from osu_pipeline import cli as cli_mod
+
+    daily = tmp_path / "daily"
+    daily.mkdir()
+    (daily / "day-2026-09-01.mp4").write_bytes(b"v" * 100)
+    db = tmp_path / "p.sqlite"
+    database.init_db(db)  # no upload rows at all
+    stats = cli_mod.prune_old_dailies(daily, db, keep_days=0)
+    assert stats["deleted"] == 0  # only copy in existence: kept
+    assert (daily / "day-2026-09-01.mp4").exists()
+
+
+def test_check_free_space(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from osu_pipeline import cli as cli_mod
+
+    cfg = SimpleNamespace(working_dir=tmp_path, daily_dir=tmp_path)
+    assert cli_mod.check_free_space(cfg, minimum_gb=0.001) is True
+    monkeypatch.setattr(cli_mod, "_free_gb", lambda p: 0.0)
+    assert cli_mod.check_free_space(cfg, minimum_gb=5.0) is False

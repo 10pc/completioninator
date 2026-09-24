@@ -174,6 +174,73 @@ def _free_gb(path: Path) -> float:
     return shutil.disk_usage(target).free / 1e9
 
 
+MIN_FREE_GB = 5.0
+DAILY_KEEP_DAYS = 7
+
+
+def check_free_space(cfg, minimum_gb: float = MIN_FREE_GB) -> bool:
+    """Fail-fast disk guard for nightly runs: report free space on the
+    working + daily volumes and refuse to start below the minimum (a
+    mid-encode ENOSPC at 5 AM strands rows and wastes the whole run)."""
+    ok = True
+    for label, path in (("working", cfg.working_dir), ("daily", cfg.daily_dir)):
+        free = _free_gb(path)
+        print(f"disk: {label} {free:.1f} GB free")
+        if free < minimum_gb:
+            print(f"disk: {label} below {minimum_gb:.0f} GB minimum, aborting",
+                  file=sys.stderr)
+            ok = False
+    return ok
+
+
+def prune_old_dailies(daily_dir: Path, db_path: Path,
+                      keep_days: int = DAILY_KEEP_DAYS) -> dict:
+    """Keep the newest keep_days of day-*.mp4 locally, delete older ones —
+    but only days with a successful YouTube upload (the upload is the
+    archive; an unuploaded local file is the only copy and is never
+    touched). Returns {kept, deleted, bytes}.
+    """
+    import re
+
+    stats = {"kept": 0, "deleted": 0, "bytes": 0}
+    try:
+        vids = [p for p in Path(daily_dir).iterdir()
+                if re.fullmatch(r"day-\d{4}-\d{2}-\d{2}(-\d+)?\.mp4", p.name)]
+    except OSError as exc:
+        log.warning("prune: daily dir unreadable (%s), skipping", exc)
+        return stats
+    days = sorted({re.fullmatch(r"day-(\d{4}-\d{2}-\d{2})(-\d+)?\.mp4", p.name).group(1)
+                   for p in vids}, reverse=True)
+    drop = set(days[keep_days:])
+    if not drop:
+        return stats
+    conn = database.connect(db_path)
+    try:
+        for p in vids:
+            day = re.fullmatch(r"day-(\d{4}-\d{2}-\d{2})(-\d+)?\.mp4", p.name).group(1)
+            if day not in drop:
+                stats["kept"] += 1
+                continue
+            up = database.get_upload(conn, day, "youtube")
+            if not up or up.get("status") != "uploaded":
+                print(f"prune: keeping {p.name} (no successful upload on record)")
+                stats["kept"] += 1
+                continue
+            try:
+                stats["bytes"] += p.stat().st_size
+                p.unlink()
+                stats["deleted"] += 1
+            except OSError as exc:
+                log.warning("prune: could not remove %s (%s)", p, exc)
+                stats["kept"] += 1
+    finally:
+        conn.close()
+    if stats["deleted"]:
+        print(f"prune: removed {stats['deleted']} uploaded video(s), "
+              f"freed {stats['bytes'] / 1e9:.2f} GB")
+    return stats
+
+
 def stop_flag_path(cfg) -> Path:
     """Cooperative-stop sentinel; lives next to the DB so all containers see it."""
     return Path(cfg.database_path).parent / "stop-render"
@@ -433,7 +500,6 @@ def _ensure_job_beatmap(conn, cfg, job, jid: int, tag: str, bhash: str | None,
                 backend=cfg.beatmap_backend,
                 fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
                 fallback2_mirror=cfg.fallback2_mirror, fallback2_backend=cfg.fallback2_backend,
-                cache_dir=cfg.beatmaps_cache,
             )
             database.set_beatmap(conn, jid, bhash, set_id)
         except beatmaps.BeatmapError as exc:
@@ -663,7 +729,6 @@ def _upgrade_finale(cfg, db_path: Path, kept: list, replay_paths: dict,
             backend=cfg.beatmap_backend,
             fallback_mirror=cfg.fallback_mirror, fallback_backend=cfg.fallback_backend,
             fallback2_mirror=cfg.fallback2_mirror, fallback2_backend=cfg.fallback2_backend,
-            cache_dir=cfg.beatmaps_cache,
         )
         conn = database.connect(db_path)
         try:
@@ -884,6 +949,9 @@ def _cmd_compose(args, cfg) -> int:
         p.unlink(missing_ok=True)
     (workdir / "concat.txt").unlink(missing_ok=True)
     # audio.txt (+ mix-manifest.json) are kept as evidence, not temp.
+    # Span media (workdir/grid: per-span mp4s + audios, already joined
+    # into video_tmp/hits.m4a) is the actual disk hog: drop it.
+    shutil.rmtree(workdir / "grid", ignore_errors=True)
     (workdir / "seg-outro.txt").unlink(missing_ok=True)
     video_tmp.unlink(missing_ok=True)
     audio_tmp.unlink(missing_ok=True)
@@ -892,6 +960,10 @@ def _cmd_compose(args, cfg) -> int:
         database.mark_composited(conn, [c.id for c in kept], today)
         database.record_daily(conn, today, out_path.as_posix(), len(kept),
                               final.duration if final else total, span, snapshot)
+        gc = beatmaps.gc_unreferenced_sets(
+            cfg.songs_dir, beatmaps.referenced_set_ids(conn))
+        print(f"gc: {gc['deleted']} unreferenced set(s) removed, "
+              f"freed {gc['bytes'] / 1e6:.1f} MB")
     finally:
         conn.close()
     return 0
@@ -1390,6 +1462,9 @@ def _cmd_compose_grid(args, cfg) -> int:
         p.unlink(missing_ok=True)
     (workdir / "concat.txt").unlink(missing_ok=True)
     # audio.txt (+ mix-manifest.json) are kept as evidence, not temp.
+    # Span media (workdir/grid: per-span mp4s + audios, already joined
+    # into video_tmp/hits.m4a) is the actual disk hog: drop it.
+    shutil.rmtree(workdir / "grid", ignore_errors=True)
     (workdir / "seg-outro.txt").unlink(missing_ok=True)
     video_tmp.unlink(missing_ok=True)
     audio_tmp.unlink(missing_ok=True)
@@ -1398,6 +1473,10 @@ def _cmd_compose_grid(args, cfg) -> int:
         database.mark_composited(conn, [c.id for c in kept], today)
         database.record_daily(conn, today, out_path.as_posix(), len(kept),
                               final.duration if final else total, span, snapshot)
+        gc = beatmaps.gc_unreferenced_sets(
+            cfg.songs_dir, beatmaps.referenced_set_ids(conn))
+        print(f"gc: {gc['deleted']} unreferenced set(s) removed, "
+              f"freed {gc['bytes'] / 1e6:.1f} MB")
     finally:
         conn.close()
     return 0
@@ -1414,6 +1493,8 @@ def _cmd_daily(args, cfg) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     print(f"discover: found={scan['found']} new={scan['new']}")
+    if not check_free_space(cfg):
+        return 2
 
     if getattr(args, "grid", False):
         return _cmd_daily_grid(args, cfg, scan)
@@ -1472,6 +1553,7 @@ def _cmd_daily(args, cfg) -> int:
         conn.close()
     print(summary + f" composed={composed} uploaded=" +
           ",".join(f"{p}:{s}" for p, s in results.items()))
+    prune_old_dailies(cfg.daily_dir, cfg.database_path)
     return 0 if all(s != "failed" for s in results.values()) else 1
 
 
@@ -1523,6 +1605,7 @@ def _cmd_daily_grid(args, cfg, scan) -> int:
         conn.close()
     print(summary + f" composed={composed} uploaded=" +
           ",".join(f"{p}:{s}" for p, s in results.items()))
+    prune_old_dailies(cfg.daily_dir, cfg.database_path)
     return 0 if all(s != "failed" for s in results.values()) else 1
 
 

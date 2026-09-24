@@ -383,3 +383,42 @@ def test_estimate_replay_seconds_adjusts_rate(tmp_path: Path, monkeypatch):
     assert beatmaps.estimate_replay_seconds(
         tmp_path / "x.osr", tmp_path / "songs", 77, "0" * 32) is None
     assert beatmaps.estimate_replay_seconds(None, tmp_path, None, None) is None
+
+
+def test_gc_unreferenced_sets(tmp_path):
+    from osu_pipeline import database
+
+    songs = tmp_path / "songs"
+    songs.mkdir()
+    (songs / "111").mkdir()
+    (songs / "111" / "a.osu").write_bytes(b"x" * 100)
+    (songs / "222").mkdir()
+    (songs / "222" / "a.osu").write_bytes(b"y" * 200)
+    (songs / "333.osz").write_bytes(b"z" * 300)
+    (songs / "notes.txt").write_text("keep me")
+    db = tmp_path / "t.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    database.insert_replay(conn, path="a.osr", sha256="h1", size=1,
+                            mtime_ns=1, played_at=None, day="2026-09-01",
+                            beatmap_hash="bh1")
+    j1 = conn.execute("SELECT id FROM replays WHERE path='a.osr'").fetchone()[0]
+    database.set_beatmap(conn, j1, "bh1", 111)
+    database.mark_ready(conn, j1)
+    database.insert_replay(conn, path="b.osr", sha256="h2", size=1,
+                            mtime_ns=1, played_at=None, day="2026-09-01",
+                            beatmap_hash="bh2")
+    j2 = conn.execute("SELECT id FROM replays WHERE path='b.osr'").fetchone()[0]
+    database.set_beatmap(conn, j2, "bh2", 222)
+    database.mark_composited(conn, [j2], "2026-09-01")
+    # live row holds its set; composited row releases its set
+    assert beatmaps.referenced_set_ids(conn) == {111}
+    stats = beatmaps.gc_unreferenced_sets(songs, {111})
+    assert stats == {"deleted": 2, "bytes": 500}
+    assert (songs / "111" / "a.osu").exists()  # referenced: kept
+    assert (songs / "notes.txt").exists()  # non-numeric: never touched
+    assert not (songs / "222").exists() and not (songs / "333.osz").exists()
+    # missing dir degrades to a no-op, never an exception
+    assert beatmaps.gc_unreferenced_sets(tmp_path / "nope", set()) == {
+        "deleted": 0, "bytes": 0}
+    conn.close()

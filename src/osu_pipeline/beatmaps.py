@@ -544,6 +544,73 @@ def stage_into_songs(cache_path: Path, songs_dir: Path, beatmapset_id: int) -> P
     return dest
 
 
+LIVE_STATUSES = ("pending", "rendering", "ready")
+
+
+def referenced_set_ids(conn) -> set[int]:
+    """Beatmapset ids still needed: rows that may yet be rendered/composed.
+
+    Terminal rows (composited/failed/unrenderable/excluded) hold no
+    reference — their sets become GC-eligible the moment the batch that
+    consumed them closes. Retried rows flip back to pending and simply
+    re-download on demand (seconds over mirror, vs gigabytes hoarded).
+    """
+    cur = conn.execute(
+        "SELECT DISTINCT beatmapset_id FROM replays "
+        "WHERE status IN ('pending', 'rendering', 'ready') "
+        "AND beatmapset_id IS NOT NULL")
+    return {int(r[0]) for r in cur.fetchall()}
+
+
+def _entry_bytes(path: Path) -> int:
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+    except OSError:
+        return 0
+
+
+def gc_unreferenced_sets(songs_dir: Path, keep: set[int]) -> dict:
+    """Delete beatmap sets no live row references. Only numeric entries
+    ({set_id}.osz files and {set_id}/ unpacked dirs) are ever touched;
+    anything else is left alone. Returns {deleted, bytes}. Never raises:
+    GC must not fail a batch (worst case the disk stays full and the
+    free-space guard reports it next run).
+    """
+    import shutil
+
+    stats = {"deleted": 0, "bytes": 0}
+    try:
+        entries = list(Path(songs_dir).iterdir())
+    except OSError as exc:
+        log.warning("gc: songs dir unreadable (%s), skipping", exc)
+        return stats
+    for entry in entries:
+        name = entry.name
+        sid = int(name[:-4]) if name.endswith(".osz") and name[:-4].isdigit() else None
+        if sid is None and name.isdigit():
+            sid = int(name)
+        if sid is None or sid in keep:
+            continue
+        freed = _entry_bytes(entry)
+        try:
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("gc: could not remove %s (%s)", entry, exc)
+            continue
+        stats["deleted"] += 1
+        stats["bytes"] += freed
+        log.debug("gc: removed set %s (%d bytes)", sid, freed)
+    if stats["deleted"]:
+        log.info("gc: removed %d unreferenced set(s), freed %.1f MB",
+                 stats["deleted"], stats["bytes"] / 1e6)
+    return stats
+
+
 def ensure_beatmap(
     mirror: str,
     beatmap_hash: str | None,
