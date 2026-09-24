@@ -512,6 +512,16 @@ def _ensure_job_beatmap(conn, cfg, job, jid: int, tag: str, bhash: str | None,
     the grid ensure command.
     """
     set_id = job.get("beatmapset_id")
+    # Fast path: set already unpacked on disk with a byte-matching .osu
+    # (post-GC re-ensures, danser-eaten .osz). Skips the mirror round trip.
+    # False (present but stale) and None (absent) fall through to download.
+    if set_id is not None and bhash:
+        try:
+            if beatmaps.replay_hash_in_songs(cfg.songs_dir, set_id, bhash) is True:
+                database.set_beatmap(conn, jid, bhash, set_id)
+                return set_id
+        except OSError:
+            pass
     # Serialized across workers: concurrent downloads of one set corrupt the
     # .part file, and concurrent danser runs contend on its internal DB.
     # Renders (the minutes-long part) stay parallel; only this ensure phase

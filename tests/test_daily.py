@@ -324,3 +324,42 @@ def test_gc_uses_union_universe(tmp_path: Path):
     assert not (songs / "333").exists()
     pc.close()
     sc.close()
+
+
+def test_ensure_skips_download_when_unpacked(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from osu_pipeline import beatmaps
+    from osu_pipeline import cli as cli_mod
+
+    songs = tmp_path / "songs"
+    songs.mkdir()
+    db = tmp_path / "t.sqlite"
+    database.init_db(db)
+    conn = database.connect(db)
+    database.insert_replay(conn, path="a.osr", sha256="h", size=1,
+                            mtime_ns=1, played_at=None, day="d",
+                            beatmap_hash="bh")
+    jid = conn.execute("SELECT id FROM replays WHERE path='a.osr'").fetchone()[0]
+    cfg = SimpleNamespace(songs_dir=songs, beatmap_mirror="m",
+                            osu_client_id="", osu_client_secret="",
+                            beatmap_backend="b", fallback_mirror=None,
+                            fallback_backend="b", fallback2_mirror=None,
+                            fallback2_backend="b")
+    job = {"beatmapset_id": 77}
+
+    def _boom(*a, **k):
+        raise AssertionError("download must be skipped")
+
+    monkeypatch.setattr(beatmaps, "replay_hash_in_songs", lambda *a: True)
+    monkeypatch.setattr(beatmaps, "ensure_beatmap", _boom)
+    assert cli_mod._ensure_job_beatmap(
+        conn, cfg, job, jid, "job-1", "bh", 77, {}, None, None) == 77
+    assert database.get_replay(conn, jid)["beatmapset_id"] == 77
+    # stale (False) and absent (None) fall through to download
+    for verdict in (False, None):
+        monkeypatch.setattr(beatmaps, "replay_hash_in_songs", lambda *a: verdict)
+        monkeypatch.setattr(beatmaps, "ensure_beatmap", lambda *a, **k: (78, None))
+        assert cli_mod._ensure_job_beatmap(
+            conn, cfg, job, jid, "job-1", "bh", 77, {}, None, None) == 78
+    conn.close()
